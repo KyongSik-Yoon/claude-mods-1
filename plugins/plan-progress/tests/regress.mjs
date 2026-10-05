@@ -220,7 +220,7 @@ const C = {
     const r = await E.call({ id: 't', done: ['A'] })
     return [res(r), E.steps('t') === 'A:done B:active C:pending']
   },
-  async same_bar_same_source_while_time_passes(E) {
+  async track_still_strip_clock_follows_now(E) {
     await create(E)
     await E.spawn('ag1', 'Scan tests')
     // the track picture stays as it was; a strip's clock offset follows the time passed, since the desktop
@@ -231,6 +231,19 @@ const C = {
     const b = await E.view('t')
     const ok = a.track === b.track && delay(a) === '0.0' && delay(b) === '7.0'
     return [`track same ${a.track === b.track}, strip clock ${delay(a)}s → ${delay(b)}s`, ok]
+  },
+  async strip_clock_counts_through_foreign_redraws(E) {
+    // issue #6: another plugin invalidates ui.render every second while the strip's markup stays the same
+    await create(E)
+    await E.spawn('ag1', 'Scan tests')
+    E.tick(3500)
+    const seen = []
+    for (let i = 0; i < 10; i++) {
+      seen.push((await E.view('t')).strips.join('').match(/--d:-([\d.]+)s/)?.[1])
+      E.tick(1000)
+    }
+    const ok = seen.every((d, i) => d === (3.5 + i).toFixed(1))
+    return [seen.join(' '), ok]
   },
   async running_pill_has_live_clock(E) {
     await create(E)
@@ -607,6 +620,77 @@ const C = {
     const svgs = await E.svgs()
     const term = await E.terminal(120)
     return [`${svgs.length} svg, ${term.filter(n => n.type === 'Svg').length} svg in terminal`, svgs.length > 0 && !term.some(n => n.type === 'Svg')]
+  },
+  async live_clock_has_an_hours_face(E) {
+    // past 99m the minutes-and-seconds face wrapped to 0m; from an hour on the clock reads "1h 05m"
+    await create(E)
+    await E.spawn('ag1', 'Scan tests')
+    const src = (await E.view('t')).strips.join('')
+    const ok = /class="ph1"/.test(src) && /class="ph2"/.test(src) && />h<\/text>/.test(src) && /\.ph2\{animation:hm 3600s/.test(src)
+    return [`minutes face ${/class="ph1"/.test(src)}, hours face ${/class="ph2"/.test(src)}`, ok]
+  },
+  async resend_keeps_a_repeated_title_open(E) {
+    await E.call({ id: 't', title: 'Task', stages: [S('One', 'Test', 'B'), S('Two', 'Test', 'C')] })
+    await E.call({ id: 't', next: true })
+    await E.call({ id: 't', stages: [S('One', 'Test', 'B'), S('Two', 'Test', 'C')] })
+    return [E.steps('t'), E.steps('t') === 'Test:done B:active Test:pending C:pending']
+  },
+  async full_list_keeps_the_new_bar(E) {
+    for (const id of ['a', 'b', 'c']) await create(E, id, three(), id)
+    await E.call({ id: 'd', title: 'd', stages: [S('One', st('A', 'done'), st('B', 'done'))] })
+    const ids = E.plans().map(p => p.id).join(',')
+    return [ids, ids === 'b,c,d']
+  },
+  async agents_bar_spares_bars_waiting_on_the_person(E) {
+    for (const id of ['a', 'b', 'c']) {
+      await create(E, id, three(), id)
+      await E.call({ id, state: 'needs_input', note: 'which one?' })
+    }
+    await E.spawn('x', 'Look around')
+    const ids = E.plans().map(p => `${p.id}:${p.state}`).join(',')
+    return [ids, ids === 'a:needs_input,b:needs_input,c:needs_input']
+  },
+  async store_cleanup_keeps_the_current_session(E) {
+    const kept = new Map([['plans:session-1', '[]'], ...Array.from({ length: 20 }, (_, i) => [`plans:old${i}`, '[]'])])
+    const F = await boot(file, kept)
+    await create(F)
+    await F.everyTick()
+    const sessions = [...kept.keys()].filter(k => k.startsWith('plans:')).length
+    return [`current kept ${kept.has('plans:session-1')}, ${sessions} sessions`, kept.has('plans:session-1') && sessions === 20]
+  },
+  async reopened_step_forgets_its_finish_time(E) {
+    await create(E)
+    E.tick(5000)
+    await E.call({ id: 't', next: true })
+    E.tick(5000)
+    await E.call({ id: 't', active: 'A' })
+    const a = E.bar('t').stages[0].steps[0]
+    return [`${a.title} ${a.status} doneAt ${a.doneAt}`, a.status === 'active' && a.doneAt === undefined]
+  },
+  async unfinished_bar_never_reads_100(E) {
+    const steps = Array.from({ length: 200 }, (_, i) => st(`S${i}`, i < 199 ? 'done' : 'active'))
+    await E.call({ id: 't', title: 'Big', stages: [S('N', ...steps)] })
+    const p = await pct(E, 't')
+    return [`${p}, ${E.bar('t').state}`, p === '99%']
+  },
+  async resize_does_not_glide(E) {
+    await E.call({ id: 't', title: 'R', stages: [S('One', 'A', 'B', 'C', 'D')] })
+    await E.call({ id: 't', next: true })
+    await E.call({ id: 't', next: true })
+    const fill = async () => (await E.svgs()).map(p => p.source).find(x => x.includes('clip-path="url(#fill)"')) ?? ''
+    globalThis.COLS = 120
+    await fill()
+    globalThis.COLS = 60
+    const after = await fill()
+    delete globalThis.COLS
+    const glides = /<animate attributeName="width"/.test(after)
+    return [`glide after resize ${glides}`, after !== '' && !glides]
+  },
+  async cut_title_keeps_whole_characters(E) {
+    await E.call({ id: 't', title: 'a'.repeat(79) + '😀 tail', stages: [S('One', 'A')] })
+    const title = E.bar('t').title
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(title)
+    return [`length ${title.length}, lone surrogate ${lone}`, !lone]
   },
 }
 

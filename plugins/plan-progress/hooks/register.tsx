@@ -29,7 +29,8 @@ const RULES = `# Progress bars
 Tasks needing more than ~3 edits or commands get a bar via ${TOOL}: create it once with the full breakdown (2-7 stages of steps {title}, or kind "todo" for one flat list; titles of at most 4 words, in the user's language; the first open step becomes active), then move it with short calls: {id, next:true} when the active step is finished, or {id, done:[...], active:"..."}, {id, failed:"...", note}. When the plan changes, resend stages under the same id; steps sent without a status keep their done by title. Send state "needs_input" with a note before asking the user to decide. Never describe the bars to the user.`
 
 type Raw = Record<string, unknown>
-const str = (v: unknown, max = 120) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '')
+// the cut drops half a character left at the edge (an emoji is two UTF-16 units)
+const str = (v: unknown, max = 120) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max).replace(/[\uD800-\uDBFF]$/, '').trimEnd() : '')
 const status = (v: unknown): StepStatus => (STATUSES.includes(v as StepStatus) ? (v as StepStatus) : 'pending')
 const list = (v: unknown): Raw[] => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : []) as Raw[]
 const isFinished = (s: StepStatus) => s === 'done' || s === 'skipped'
@@ -45,6 +46,11 @@ function applyOps(stages: PlanStage[], input: Raw, now: number): { stages: PlanS
   // a step finishing now remembers when, for the time its checkpoint shows
   const finish = (st: PlanStep) => {
     if (!isFinished(st.status)) Object.assign(st, { status: 'done', doneAt: now })
+  }
+  // a step opened again forgets when it was finished, so its checkpoint shows no stale time
+  const reopen = (st: PlanStep, to: StepStatus) => {
+    st.status = to
+    delete st.doneAt
   }
   // a title used twice means the one still open
   const find = (title: string) => {
@@ -80,10 +86,10 @@ function applyOps(stages: PlanStage[], input: Raw, now: number): { stages: PlanS
         else st.status = 'pending'
       }
     })
-    active.status = 'active'
+    reopen(active, 'active')
   }
   const failed = typeof input.failed === 'string' ? find(input.failed) : undefined
-  if (failed) failed.status = 'error'
+  if (failed) reopen(failed, 'error')
 
   return { stages: next, missing }
 }
@@ -128,13 +134,21 @@ function normalize(input: Raw, prev: Plan | null, now: number, id: string): Plan
 }
 
 // a resent plan keeps what is finished: a step sent as pending under a title that was done stays done
+// a title used twice: each finished step carries over to one resent step of that title, in order
 function carryDone(stages: PlanStage[], before: PlanStage[]): PlanStage[] {
-  const finished = new Map(before.flatMap(s => s.steps).filter(st => isFinished(st.status)).map(st => [st.title.trim().toLowerCase(), st]))
+  const finished = new Map<string, PlanStep[]>()
+  for (const st of before.flatMap(s => s.steps).filter(st => isFinished(st.status))) {
+    const key = st.title.trim().toLowerCase()
+    finished.set(key, [...(finished.get(key) ?? []), st])
+  }
   return stages.map(s => ({
     ...s,
     steps: s.steps.map(st => {
-      const was = finished.get(st.title.trim().toLowerCase())
-      return was && (st.status === 'pending' || st.status === was.status) ? { ...st, status: was.status, doneAt: was.doneAt } : st
+      const queue = finished.get(st.title.trim().toLowerCase())
+      const was = queue?.[0]
+      if (!queue || !was || !(st.status === 'pending' || st.status === was.status)) return st
+      queue.shift()
+      return { ...st, status: was.status, doneAt: was.doneAt }
     }),
   }))
 }
@@ -257,7 +271,7 @@ function addDot(dots: Map<string, string>, cls: string, x: number, y: number) {
 }
 
 // last drawn head position per plan, so a redraw glides from where the bar was
-const lastHead = new Map<string, number>()
+const lastHead = new Map<string, { W: number; x: number }>()
 
 // the track draws in a sandboxed frame (for hover); its page must stay see-through in either theme
 const SEE_THROUGH = '<style>:root,html,body{background:transparent!important;color-scheme:light dark;margin:0;overflow:hidden}svg{display:block}</style>'
@@ -265,40 +279,46 @@ const SEE_THROUGH = '<style>:root,html,body{background:transparent!important;col
 // a clock that counts in the frame by itself, so the drawing never has to be redrawn each second (a redraw
 // reloads the frame and everything in it blinks): each digit is a reel of its figures behind a one-line window,
 // stepped by a CSS animation whose negative delay is the time already run. Plain SVG, since the host's frame
-// drops foreignObject. {{T:start}} becomes those seconds only when a bar's markup really changes (liveSource)
+// drops foreignObject. {{T:start}} becomes those seconds on every draw (liveSource)
 const CLOCK_W = 48 // "59m 59s"
 const LINE = 16
 const CLOCK_CSS = `.ckt{font-variant-numeric:tabular-nums}
 .rs1{animation:r10 10s steps(10) var(--d) infinite}.rs10{animation:r6 60s steps(6) var(--d) infinite}
-.cc{animation:cc 600s linear var(--d) both}@keyframes cc{0%,9.99%{transform:translateX(-13.5px)}10%,99.99%{transform:translateX(-3.25px)}100%{transform:none}}
+.cc{animation:cc 36000s linear var(--d) both}@keyframes cc{0%,.1666%{transform:translateX(-13.5px)}.1667%,1.6666%{transform:translateX(-3.25px)}1.6667%,9.9999%{transform:none}10%,99.9999%{transform:translateX(-3.25px)}100%{transform:none}}
 .rm1{animation:r10 600s steps(10) var(--d) infinite}.rm10{animation:r10 6000s steps(10) var(--d) infinite}.rmm{animation:hm 60s steps(1,end) var(--d) both}
-@keyframes r10{to{transform:translateY(-${LINE * 10}px)}}@keyframes r6{to{transform:translateY(-${LINE * 6}px)}}@keyframes hm{from{opacity:0}to{opacity:1}}`
+.rm6{animation:r6 3600s steps(6) var(--d) infinite}.rh1{animation:r10 36000s steps(10) var(--d) infinite}.rh10{animation:r10 360000s steps(10) var(--d) infinite}
+.ph1{animation:ho 3600s steps(1,end) var(--d) both}.ph2{animation:hm 3600s steps(1,end) var(--d) both}
+@keyframes r10{to{transform:translateY(-${LINE * 10}px)}}@keyframes r6{to{transform:translateY(-${LINE * 6}px)}}@keyframes hm{from{opacity:0}to{opacity:1}}@keyframes ho{from{opacity:1}to{opacity:0}}`
 
-// x is the clock's left edge, top the window's top; the minutes part stays hidden for the first minute
+// x is the clock's left edge, top the window's top. Under an hour it reads "12m 05s", the minutes part hidden for
+// the first minute; from an hour on "1h 05m", as elapsed() writes a finished time, up to 99h
 function liveClock(x: number, top: number, start: number, cls: string, textCls: string, isCentered = false): string {
   const base = top + 12
   const reel = (cx: number, figures: string[], reelCls: string) =>
     `<g class="${reelCls}"><text class="${textCls} ckt" text-anchor="middle">${figures
       .map((f, i) => `<tspan x="${cx.toFixed(1)}" y="${base + i * LINE}">${f}</tspan>`)
       .join('')}</text></g>`
+  const unit = (ux: number, label: string) => `<text x="${ux.toFixed(1)}" y="${base}" class="${textCls}">${label}</text>`
   const digits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+  const tens = ['', ...digits.slice(1)]
   const id = `ck${start}x${Math.round(x)}y${Math.round(top)}`
+  const minutes =
+    `<g class="ph1"><g class="rmm">${reel(x + 3.5, tens, 'rm10')}${reel(x + 10.5, digits, 'rm1')}${unit(x + 14, 'm')}</g>` +
+    `${reel(x + 31, digits.slice(0, 6), 'rs10')}${reel(x + 38, digits, 'rs1')}${unit(x + 41.5, 's')}</g>`
+  const hours =
+    `<g class="ph2">${reel(x + 3.5, tens, 'rh10')}${reel(x + 10.5, digits, 'rh1')}${unit(x + 14, 'h')}` +
+    `${reel(x + 31, digits.slice(0, 6), 'rm6')}${reel(x + 38, digits, 'rm1')}${unit(x + 41.5, 'm')}</g>`
   return (
     `<style>.${id}{--d:-{{T:${start}}}s}</style><g class="${cls} ${id}"><clipPath id="${id}"><rect x="${(x - 2).toFixed(1)}" y="${top}" width="${CLOCK_W + 4}" height="${LINE}"/></clipPath>` +
-    `<g clip-path="url(#${id})"${isCentered ? ' class="cc"' : ''}><g class="rmm">${reel(x + 3.5, ['', ...digits.slice(1)], 'rm10')}${reel(x + 10.5, digits, 'rm1')}` +
-    `<text x="${(x + 14).toFixed(1)}" y="${base}" class="${textCls}">m</text></g>` +
-    `${reel(x + 31, digits.slice(0, 6), 'rs10')}${reel(x + 38, digits, 'rs1')}<text x="${(x + 41.5).toFixed(1)}" y="${base}" class="${textCls}">s</text></g></g>`
+    `<g clip-path="url(#${id})"${isCentered ? ' class="cc"' : ''}>${minutes}${hours}</g></g>`
   )
 }
 
-// Every redraw of the band (another plugin's invalidate included) rebuilds the picture on the desktop, so a
-// source reused from an earlier draw restarts its clocks at that draw's offset: the offset is taken from now
-// on every draw, and the map only remembers which strips are on screen (see forgetGone)
-const lastSource = new Map<string, { template: string; source: string }>()
-function liveSource(id: string, template: string, now: number): string {
-  const source = template.replace(/\{\{T:(\d+)\}\}/g, (_, t: string) => Math.max(0, (now - Number(t)) / 1000).toFixed(1))
-  lastSource.set(id, { template, source })
-  return source
+// the desktop rebuilds a strip's picture on every redraw of the band, another plugin's invalidate included, so a
+// source reused from an earlier draw would restart its clocks at that draw's offset (issue #6): the offset is
+// taken from now on every draw
+function liveSource(template: string, now: number): string {
+  return template.replace(/\{\{T:(\d+)\}\}/g, (_, t: string) => Math.max(0, (now - Number(t)) / 1000).toFixed(1))
 }
 
 // a bar is drawn twice: the track itself as a plain picture, which the desktop keeps steady whatever else redraws,
@@ -324,8 +344,10 @@ function drawTrack(p: Plan, W: number): Track {
   const frac = done ? 1 : Math.min(1, w.pos / Math.max(1, w.total))
   const fx = frac * W
   const key = p.id
-  const from = lastHead.get(key) ?? fx
-  lastHead.set(key, fx)
+  // a resize redraws at once: a head drawn at another width would glide in from the wrong place
+  const last = lastHead.get(key)
+  const from = last?.W === W ? last.x : fx
+  lastHead.set(key, { W, x: fx })
 
   const acc = hex(STATE_COLOR[p.state])
   const light = mix(acc, [255, 255, 255], 0.32)
@@ -483,6 +505,12 @@ const AGENT_COLOR: Record<AgentRun['state'], string> = {
 function stripAlt(p: Plan, key: string): string {
   const a = (p.agents ?? []).find(x => x.id === key)
   return a ? `agent ${a.title}: ${a.state}, ${a.tool}` : 'more agents'
+}
+
+// an unfinished bar stops at 99%: 199 of 200 steps would otherwise round up to 100%
+function percent(p: Plan, w: { pos: number; total: number }): number {
+  if (p.state === 'done') return 100
+  return Math.min(99, Math.round((Math.min(w.pos, w.total) / Math.max(1, w.total)) * 100))
 }
 
 const elapsed = (ms: number) => {
@@ -986,9 +1014,13 @@ function placeBar(list: readonly Plan[], next: Plan): Plan[] {
   // an update keeps its row and, unless it brings its own, the agent strips already on it; a new bar goes to the bottom
   const kept = prev && !('agents' in next) ? { ...next, agents: prev.agents, agentsDoneAt: prev.agentsDoneAt } : next
   const rest = prev ? list.map(p => (p.id === next.id ? kept : p)) : [...list, next]
+  // the oldest finished bar goes first, then the oldest running one; the bar just placed and a bar waiting on the
+  // person or showing an error stay while any other can go, though the mod's own Agents bar gives way to them
+  const pick = (ok: (p: Plan) => boolean) => rest.findIndex(p => p.id !== next.id && ok(p))
   while (rest.length > MAX_BARS) {
-    const doneAt = rest.findIndex(p => p.state === 'done')
-    rest.splice(doneAt >= 0 ? doneAt : 0, 1)
+    const ownAgents = next.id === AGENTS ? rest.findIndex(p => p.id === AGENTS) : -1
+    const at = [pick(p => p.state === 'done'), pick(p => p.state === 'running'), ownAgents, pick(() => true)].find(i => i >= 0) ?? 0
+    rest.splice(at, 1)
   }
   return rest
 }
@@ -1103,10 +1135,6 @@ function forgetGone(list: readonly Plan[]) {
   const shown = new Set(list.flatMap(p => (p.agents ?? []).map(a => a.id)))
   for (const id of lastHead.keys()) if (!bars.has(id)) lastHead.delete(id)
   for (const id of glide.keys()) if (!bars.has(id)) glide.delete(id)
-  for (const id of lastSource.keys()) {
-    const [bar, strip] = id.split('/')
-    if (!bars.has(bar ?? '') || (strip !== undefined && strip !== '+' && !shown.has(strip))) lastSource.delete(id)
-  }
   for (const id of lastStrip.keys()) if (!shown.has(id)) lastStrip.delete(id)
   for (const [id, home] of agentHome) {
     if (bars.has(home) && live.has(id)) continue
@@ -1160,8 +1188,9 @@ async function savePlans($: EngineInterface, list: Plan[]) {
     return
   }
   await $.store.set(key, list)
-  const keys = (await $.store.keys()).filter(k => k.startsWith(SAVED))
-  for (const old of keys.slice(0, Math.max(0, keys.length - KEEP_SESSIONS))) await $.store.delete(old)
+  // the current session counts as one of the kept, whatever its place in the store's order
+  const keys = (await $.store.keys()).filter(k => k.startsWith(SAVED) && k !== key)
+  for (const old of keys.slice(0, Math.max(0, keys.length - (KEEP_SESSIONS - 1)))) await $.store.delete(old)
 }
 
 // agents do not outlive the process that ran them, so a restored bar comes back without strips
@@ -1539,7 +1568,7 @@ export const register: Register = on => {
             const v = visibleAgents(p, now, stripBudget(list.length))
             const strips = v ? stripCells(v, trackW, now) : null
             const w = where(p)
-            const pct = p.state === 'done' ? 100 : Math.round((Math.min(w.pos, w.total) / Math.max(1, w.total)) * 100)
+            const pct = percent(p, w)
             return (
               <Box key={`bar-${p.id}`} flexDirection="column">
                 <Box flexDirection="row" gap={1}>
@@ -1586,13 +1615,12 @@ export const register: Register = on => {
         {list.flatMap((p, i) => {
           const v = visibleAgents(p, now, stripBudget(list.length))
           const track = trackSvg(p, trackW)
-          // the layer is rebuilt on every redraw anyway, so its clock is set from now each time
-          const hover = track.overlay.replace(/\{\{T:(\d+)\}\}/g, (_, t: string) => Math.max(0, (now - Number(t)) / 1000).toFixed(1))
+          const hover = liveSource(track.overlay, now)
           const strips = v && Svg
             ? stripsSvg(v, p.agents ?? [], trackW).map(r => (
                 <Svg
                   key={`strip-${p.id}-${r.key}`}
-                  source={liveSource(`${p.id}/${r.key}`, `<svg xmlns="http://www.w3.org/2000/svg" width="${trackW}" height="${r.height}">${STRIP_STYLE}${r.html}</svg>`, now)}
+                  source={liveSource(`<svg xmlns="http://www.w3.org/2000/svg" width="${trackW}" height="${r.height}">${STRIP_STYLE}${r.html}</svg>`, now)}
                   alt={stripAlt(p, r.key)}
                   width={trackW}
                   height={r.height}
@@ -1602,7 +1630,7 @@ export const register: Register = on => {
           const agentsAlt = v ? `; agents: ${(p.agents ?? []).map(a => `${a.title} ${a.state}`).join(', ')}` : ''
           const line = i > 0 && Svg ? [<Svg key={`div-${p.id}`} source={divider} alt="divider" width={total} height={1} />] : []
           const w = where(p)
-          const pct = p.state === 'done' ? 100 : Math.round((Math.min(w.pos, w.total) / Math.max(1, w.total)) * 100)
+          const pct = percent(p, w)
           const color = STATE_COLOR[p.state]
           const stageName = p.stages[w.stage]?.name ?? ''
           const alt =
