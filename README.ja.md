@@ -23,6 +23,8 @@ Claude Code の入力欄の上にリアルタイムの進捗バーを表示し�
 
 ### インストール
 
+Claude Code 2.1.286 以降が必要です（`claude --version` で確認、`claude update` で更新）。それより古いバージョンではフックモジュールが読み込まれず、バーは表示されません。起動時に `plan-progress: hooks module did not load` と表示されます。
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods

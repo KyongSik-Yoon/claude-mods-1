@@ -23,6 +23,8 @@ Live-Fortschrittsbalken über dem Eingabefeld von Claude Code. Claude teilt eine
 
 ### Installation
 
+Erfordert Claude Code 2.1.286 oder neuer (`claude --version`; aktualisieren mit `claude update`). In älteren Versionen lädt das Hooks-Modul nicht und es erscheinen keine Balken; beim Start steht `plan-progress: hooks module did not load`.
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods

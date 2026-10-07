@@ -23,6 +23,8 @@
 
 ### 安装
 
+需要 Claude Code 2.1.286 或更高版本（用 `claude --version` 查看，用 `claude update` 更新）。在更旧的版本上钩子模块不会加载，也不会出现进度条；启动时会显示 `plan-progress: hooks module did not load`。
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods

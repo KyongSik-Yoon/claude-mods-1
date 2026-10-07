@@ -4,10 +4,15 @@ globalThis.h = (type, props, ...children) => ({ type, props: props ?? {}, childr
 export const TOOL = 'mcp__plan-progress__plan_progress'
 
 export async function boot(file, kept = new Map()) {
-  // a fresh module instance per scenario, so its module-level maps start empty
-  const mod = await import(new URL(file, import.meta.url).href + '?n=' + Math.random())
-  const hooks = []
-  mod.register((event, a, b) => hooks.push(b ? { event, matcher: a, fn: b } : { event, matcher: null, fn: a }), {})
+  // a fresh module instance per scenario, so its module-level maps start empty; reload() loads another one
+  // over the same state and store, as the engine does when the mod is updated or edited
+  let hooks = []
+  const load = async () => {
+    const mod = await import(new URL(file, import.meta.url).href + '?n=' + Math.random())
+    hooks = []
+    mod.register((event, a, b) => hooks.push(b ? { event, matcher: a, fn: b } : { event, matcher: null, fn: a }), {})
+  }
+  await load()
 
   const state = new Map()
   let now = 1_000_000
@@ -19,6 +24,7 @@ export async function boot(file, kept = new Map()) {
   // the machine the stub plays: globalThis.MAC (default true), DARK for the macOS appearance,
   // TERM_PROGRAM for the terminal, THEME for Claude Code's theme setting
   const procs = []
+  const procEnvs = []
   const $ = {
     __get(a) {
       return state.has(a.ref.key) ? state.get(a.ref.key) : a.initial
@@ -44,8 +50,9 @@ export async function boot(file, kept = new Map()) {
     session: { id: async () => 'session-1' },
     audio: { play: async ({ asset }) => void sounds.push(asset) },
     process: {
-      run: async argv => {
+      run: async (argv, init) => {
         procs.push(argv.join(' '))
+        procEnvs.push(init?.env ?? {})
         if (globalThis.MAC === false) throw new Error(`${argv[0]}: not found`)
         if (argv[0] === 'defaults') return { exitCode: globalThis.DARK ? 0 : 1, stdout: globalThis.DARK ? 'Dark\n' : '', stderr: '' }
         if (argv[0] === '/bin/sh') return { exitCode: 0, stdout: globalThis.TERM_PROGRAM ?? '', stderr: '' }
@@ -59,9 +66,10 @@ export async function boot(file, kept = new Map()) {
     ui: {
       resolve: e => (e?.surface === 'terminal' ? { Box: 'Box', Button: 'Button', Text: 'Text', Raster: 'Raster' } : { Box: 'Box', Button: 'Button', Text: 'Text', Svg: 'Svg' }),
       toast: () => {},
+      // globalThis.BLIT_DENY plays an engine that refuses the blits (the band unmounted or redrawn at another size)
       blit: async args => {
         blits.push(args)
-        return {}
+        return globalThis.BLIT_DENY ? { deny: String(globalThis.BLIT_DENY) } : {}
       },
     },
   }
@@ -80,6 +88,14 @@ export async function boot(file, kept = new Map()) {
     sounds,
     blits,
     procs,
+    procEnvs,
+    // the hooks module loads again: its timers stop, its module variables start over, $.state and the store stay
+    reload: async () => {
+      for (const t of every) t.isOn = false
+      timers.splice(0)
+      await load()
+      await api.sessionStart()
+    },
     setTheme: value => dispatch('config.set', { key: 'theme', value, previous: globalThis.THEME ?? 'dark' }, () => ({ value })),
     coreRuns,
     // any event straight into the hooks, the core answering nothing
@@ -93,6 +109,12 @@ export async function boot(file, kept = new Map()) {
       for (const t of [...every]) if (t.isOn) await t.cb()
     },
     frameTimers: () => every.filter(t => t.isOn && t.ms < 100).length,
+    // one period of the frame clock alone (timers under 100 ms), as the 33 ms clock fires many times a second;
+    // a frame runs on by itself after its timer returns, so the period ends once it has
+    frameTick: async () => {
+      for (const t of [...every]) if (t.isOn && t.ms < 100) await t.cb()
+      await new Promise(r => setTimeout(r, 0))
+    },
     fireTimers: async () => {
       for (const t of timers.splice(0)) await t.cb()
     },
