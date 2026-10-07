@@ -510,7 +510,7 @@ const AGENT_COLOR: Record<AgentRun['state'], string> = {
 // with its backing. The terminal picks by isLight
 type Scheme = { page: string; ink: string; dim: string; gutter: string; more: string; word: Record<AgentRun['state'], string> }
 const SCHEMES: Record<'dark' | 'light', Scheme> = {
-  dark: { page: '#1F1E1D', ink: '#F0EEFC', dim: '#A7A5AE', gutter: '#A8A69E', more: '#8A8984', word: { running: '#9C85D8', waiting: '#C0883B', done: '#4FA569', error: '#D67278' } },
+  dark: { page: '#1F1E1D', ink: '#F0EEFC', dim: '#A7A5AE', gutter: '#A8A69E', more: '#9A9993', word: { running: '#9C85D8', waiting: '#C0883B', done: '#4FA569', error: '#D67278' } },
   light: { page: '#FFFFFF', ink: '#222226', dim: '#5B5B5E', gutter: '#5F5E59', more: '#6F6D66', word: { running: '#6A4DB2', waiting: '#905300', done: '#157632', error: '#B13038' } },
 }
 
@@ -591,7 +591,8 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
   const gutter = (y: number, label: string, cls: string) =>
     `<g class="${cls}"><g transform="translate(1 ${y + 2}) scale(.5)" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${BOT}</g>` +
     `<text x="16" y="${y + 11.5}" class="sn sg">${label}</text></g>`
-  // the scheme's page under a tint, so the tint and the text over it look the same on any background
+  // the scheme's page under a tint, so the tint and the text over it look the same on any background; drawn first, so
+  // a "+N" wider than the gutter still shows whole
   const backing = (y: number) => `<rect class="sb" x="${GUTTER}" y="${y}" width="${SW}" height="${STRIP_H}" rx="${STRIP_H / 2}"/>`
   v.shown.forEach((a, i) => {
     // the first strip keeps a little room from the track above it
@@ -640,8 +641,8 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
         (word ? `<text x="${toolEnd}" y="${y + 11.5}" text-anchor="end" class="sn w-${a.state}${isWordChanged ? ' mi' : ''}">${esc(word)}</text>` : '') +
         time
     const html =
-      gutter(y, String(all.indexOf(a) + 1), 'gu') +
       backing(y) +
+      gutter(y, String(all.indexOf(a) + 1), 'gu') +
       `<rect x="${GUTTER}" y="${y}" width="${SW}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${c}" fill-opacity=".15">${flow('fill')}</rect>${px}` +
       `<circle cx="${GUTTER + 10 + indent}" cy="${y + STRIP_H / 2}" r="3" fill="${c}"${a.state === 'running' ? ' class="sd"' : ''}>${flow('fill')}</circle>` +
       `<text x="${nameX}" y="${y + 11.5}" class="sn">${nameMarkup(name)}</text>` +
@@ -656,8 +657,8 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
       key: '+',
       height: y + STRIP_H,
       html:
-        gutter(y, `+${v.hidden.length}`, 'gm') +
         backing(y) +
+        gutter(y, `+${v.hidden.length}`, 'gm') +
         `<rect x="${GUTTER}" y="${y}" width="${SW}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="#808080" fill-opacity=".14"/>` +
         `<text x="${GUTTER + 10}" y="${y + 11.5}" class="sn st">${plural(v.hidden.length, 'more agent')} · ${doneCount} done</text>`,
     })
@@ -1708,8 +1709,6 @@ export const register: Register = on => {
       band = null
       return next(e)
     }
-    // what the host and the plugins after this one draw here stays, under the bars, next to the prompt (issue #15)
-    const below = await next(e)
     if (e.surface === 'terminal') {
       const { Box, Button, Text, Raster } = $.ui.resolve(e)
       await read($, tick)
@@ -1764,6 +1763,9 @@ export const register: Register = on => {
       )
       // the cells above start a glide where the bar moved; the frames that carry it start with them
       syncFrames($, now)
+      // what the host and the plugins after this one draw here stays, under the bars, next to the prompt (issue #15).
+      // Asked last: a slow hook below would otherwise let an older draw set the band after a newer one
+      const below = await next(e)
       return below ? (
         <Box flexDirection="column">
           {tree}
@@ -1853,6 +1855,7 @@ export const register: Register = on => {
         })}
       </Box>
     )
+    const below = await next(e)
     return below ? (
       <Box flexDirection="column">
         {bars}

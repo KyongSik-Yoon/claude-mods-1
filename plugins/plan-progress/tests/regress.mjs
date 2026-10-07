@@ -1153,12 +1153,34 @@ const C = {
     for (const id of ['g4', 'g5', 'g6', 'g7']) await E.turnComplete(id)
     const v = await E.view('t')
     const sheet = v.strips[0]?.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? ''
-    const at = sheet.indexOf('@media (prefers-color-scheme:light){')
+    // the sheet as a browser applies it in each scheme: the rules outside any @media, then those under the scheme's query
+    const blocks = []
+    let flat = ''
+    for (let i = 0; i < sheet.length; ) {
+      const at = sheet.indexOf('@media', i)
+      if (at < 0) {
+        flat += sheet.slice(i)
+        break
+      }
+      flat += sheet.slice(i, at)
+      const open = sheet.indexOf('{', at)
+      let depth = 1
+      let end = open + 1
+      for (; end < sheet.length && depth > 0; end++) depth += sheet[end] === '{' ? 1 : sheet[end] === '}' ? -1 : 0
+      blocks.push({ query: sheet.slice(at + 6, open).trim(), body: sheet.slice(open + 1, end - 1) })
+      i = end
+    }
     const rules = css => Object.fromEntries([...css.matchAll(/\.([\w-]+)\{(?:fill|color):(#[0-9A-Fa-f]{6})\}/g)].map(m => [m[1], toRgb(m[2])]))
-    const base = rules(at < 0 ? sheet : sheet.slice(0, at))
-    const schemes = { dark: base, light: { ...base, ...(at < 0 ? {} : rules(sheet.slice(at))) } }
+    const under = q => rules(blocks.filter(b => b.query === q).map(b => b.body).join(''))
+    const schemes = { dark: { ...rules(flat), ...under('(prefers-color-scheme:dark)') }, light: { ...rules(flat), ...under('(prefers-color-scheme:light)') } }
+    // the gutter sits on the app's own background, not on the strip's backing
+    const PAGES = { dark: ['#1F1E1D', '#262624'], light: ['#FFFFFF', '#FAF9F5'] }
     const worst = {}
     const seen = new Set()
+    const isDark = c => c !== undefined && luminance(c) < 0.05
+    const isLight = c => c !== undefined && luminance(c) > 0.7
+    if (!(isDark(schemes.dark.sb) && isLight(schemes.dark.sn))) seen.add('the dark scheme is not light text on a dark backing')
+    if (!(isLight(schemes.light.sb) && isDark(schemes.light.sn))) seen.add('the light scheme is not dark text on a light backing')
     for (const [name, k] of Object.entries(schemes)) {
       let min = Infinity
       const check = (fg, bg, what) => {
@@ -1170,15 +1192,19 @@ const C = {
         min = Math.min(min, contrast(fg, bg))
       }
       for (const src of v.strips) {
-        if (!src.includes('class="sb"')) seen.add('no backing')
+        const sb = src.indexOf('class="sb"')
+        if (sb < 0) seen.add('no backing')
+        else if ([src.search(/class="g[um]"/), src.search(/fill-opacity="\.1\d"/)].some(x => x >= 0 && x < sb)) seen.add('backing drawn over the gutter or the tint')
         if (/style="fill:/.test(src)) seen.add('inline fill')
         const tint = src.match(/fill="(#[0-9A-Fa-f]{6})" fill-opacity="(\.\d+)"/)
         const back = tint && k.sb ? over(k.sb, toRgb(tint[1]), Number(tint[2])) : null
         if (src.includes('class="sn"')) check(k.sn, back, 'name')
         if (/class="(?:sn )?st"/.test(src)) check(k.st, back, 'dim')
         for (const m of src.matchAll(/ w-(\w+)/g)) check(k[`w-${m[1]}`], back, `word ${m[1]}`)
-        if (src.includes('class="gu"')) check(k.gu, k.sb, 'gutter')
-        if (src.includes('class="gm"')) check(k.gm, k.sb, 'more gutter')
+        for (const page of PAGES[name]) {
+          if (src.includes('class="gu"')) check(k.gu, toRgb(page), 'gutter')
+          if (src.includes('class="gm"')) check(k.gm, toRgb(page), 'more gutter')
+        }
       }
       worst[name] = min
     }
@@ -1234,6 +1260,32 @@ const C = {
       const termBar = terminal.findIndex(n => n.type === 'Raster')
       const ok = deskBar >= 0 && deskHost > deskBar && termBar >= 0 && termHost > termBar && asked === 2
       return [`desktop bar at ${deskBar}, host at ${deskHost}; terminal bar at ${termBar}, host at ${termHost}; next asked ${asked}x in 2 draws`, ok]
+    } finally {
+      delete globalThis.BELOW
+    }
+  },
+  async slow_hook_below_leaves_the_band_to_the_newest_draw(E) {
+    // a hook below that answers late must not let an older terminal draw take the band after a newer one: the frames
+    // would repaint the bar where it was
+    let asked = 0
+    globalThis.BELOW = () => (asked++ === 0 ? new Promise(r => setTimeout(() => r(null), 30)) : null)
+    try {
+      await E.turnStart()
+      await create(E)
+      const older = E.terminal(120)
+      await new Promise(r => setTimeout(r, 0))
+      await E.call({ id: 't', next: true })
+      await E.call({ id: 't', next: true })
+      const drawn = (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t')
+      await older
+      const before = E.blits.length
+      E.tick(40)
+      await E.frameTick()
+      const frame = E.blits.slice(before).filter(b => b.key === 'track-t').at(-1)
+      const shown = glyphs(drawn.props.cells)
+      const painted = frame ? glyphs(frame.cells) : ''
+      const ok = shown.includes('Two') && painted.includes('Two')
+      return [`drawn "${shown.match(/[A-Za-z]+ [\d/]+/)?.[0]}", frame paints "${painted.match(/[A-Za-z]+ [\d/]+/)?.[0] ?? 'nothing'}"`, ok]
     } finally {
       delete globalThis.BELOW
     }
