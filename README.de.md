@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` blendet die Balken ein oder aus
 - `/progress-clear` entfernt alle Balken
+- `/progress-agents` klappt die Agentenstreifen unter den Balken ein oder zeigt sie wieder (die Schaltfläche ▾ neben dem ✕ eines Balkens tut das für diesen Balken)
 
 Die Schaltfläche **Progress** in der Fußzeile entspricht `/progress`.
 

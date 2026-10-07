@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` shows or hides the bars
 - `/progress-clear` removes all bars
+- `/progress-agents` folds the agent strips under the bars, or shows them again (the ▾ button next to a bar's ✕ does it for that bar)
 
 The **Progress** button in the footer does the same as `/progress`.
 

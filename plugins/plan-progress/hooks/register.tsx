@@ -431,8 +431,11 @@ function drawTrack(p: Plan, W: number): Track {
     }`
   } else {
     const name = done ? (p.endedAt ? elapsed(p.endedAt - p.startedAt) : 'Done') : single ? (p.stages[0]?.name ?? 'Tasks') : (p.stages[w.stage]?.name ?? '')
-    // the pill carries the stage name alone; the fill and the percent already say how far along it is
-    const count = ''
+    // the pill carries the stage name alone (the fill and the percent already say how far along it is), and, while
+    // the person has folded the bar's agent strips away, how many of its agents are still at work
+    const agents = p.isFolded && p.id !== AGENTS ? (p.agents ?? []) : []
+    const running = agents.filter(a => a.state === 'running' || a.state === 'waiting').length
+    const count = agents.length === 0 ? '' : running > 0 ? `${running} running` : `${agents.length} done`
     const iconW = icon ? 16 : 0
     const countW = count ? textWidth(count, 6.5) : -6
     const maxW = Math.max(80, W * 0.55)
@@ -533,6 +536,12 @@ function visibleAgents(p: Plan, now: number, max: number): { shown: AgentRun[]; 
   }
   return { shown: list.filter(a => keep.has(a.id)), hidden: list.filter(a => !keep.has(a.id)) }
 }
+
+// the strips drawn under a bar: none while the person has folded them away (the bar's pill still counts its agents)
+const shownAgents = (p: Plan, now: number, max: number) => (p.isFolded ? null : visibleAgents(p, now, max))
+// a bar gets a fold button while it has strips to show or fold; folded with none left (the batch over, or after a
+// restart) it keeps the choice for its next agents but shows no button that would do nothing
+const canFold = (p: Plan, now: number, max: number) => visibleAgents(p, now, max) !== null
 
 // what each strip showed last time it was drawn, so a change morphs from the old status instead of jumping
 const lastStrip = new Map<string, { tool: string; color: string }>()
@@ -1015,7 +1024,7 @@ async function syncTint($: EngineInterface, now: number) {
 function blitPlans($: EngineInterface, b: Band, list: readonly Plan[], now: number) {
   return Promise.all(
     list.flatMap(p => {
-      const v = visibleAgents(p, now, stripBudget(b.list.length))
+      const v = shownAgents(p, now, stripBudget(b.list.length))
       const strips = v ? stripCells(v, b.W, now) : null
       const calls = [$.ui.blit({ requestId: b.requestId, key: `track-${p.id}`, cells: trackCells(p, b.W, now), columns: b.W, rows: 1 })]
       if (strips) calls.push($.ui.blit({ requestId: b.requestId, key: `strips-${p.id}`, cells: strips.cells, columns: b.W, rows: strips.rows }))
@@ -1097,7 +1106,8 @@ const slug = (s: string) =>
 function placeBar(list: readonly Plan[], next: Plan): Plan[] {
   const prev = list.find(p => p.id === next.id)
   // an update keeps its row and, unless it brings its own, the agent strips already on it; a new bar goes to the bottom
-  const kept = prev && !('agents' in next) ? { ...next, agents: prev.agents, agentsDoneAt: prev.agentsDoneAt } : next
+  // an update keeps the bar's strips and whether the person folded them; Claude moves a bar after every step
+  const kept = prev && !('agents' in next) ? { ...next, agents: prev.agents, agentsDoneAt: prev.agentsDoneAt, isFolded: 'isFolded' in next ? next.isFolded : prev.isFolded } : next
   const rest = prev ? list.map(p => (p.id === next.id ? kept : p)) : [...list, next]
   // the oldest finished bar goes first, then the oldest running one; the bar just placed and a bar waiting on the
   // person or showing an error stay while any other can go, though the mod's own Agents bar gives way to them
@@ -1237,6 +1247,11 @@ function forgetGone(list: readonly Plan[]) {
     agentHome.delete(id)
     forgetFlights(id)
   }
+}
+
+// folds a bar's agent strips away or shows them again; the bar itself stays, its pill still counting the agents
+async function foldPlan($: EngineInterface, id: string) {
+  await update($, plans, list => list.map(p => (p.id === id ? { ...p, isFolded: !p.isFolded } : p)))
 }
 
 async function dropPlan($: EngineInterface, id: string) {
@@ -1548,6 +1563,7 @@ export const register: Register = on => {
     })
     await $.command.register({ name: 'progress', description: 'Show or hide the progress bars' })
     await $.command.register({ name: 'progress-clear', description: 'Remove all progress bars' })
+    await $.command.register({ name: 'progress-agents', description: 'Fold or show the agent strips under the bars' })
 
     return next(e)
   })
@@ -1623,6 +1639,18 @@ export const register: Register = on => {
     return { text: open ? 'Progress bars hidden.' : 'Progress bars shown.' }
   })
 
+  // folds every bar's agent strips at once, or shows them all again: the terminal outside fullscreen has no buttons
+  on('command.run', { command: 'progress-agents' }, async $ => {
+    const now = await $.clock.now()
+    const list = await read($, plans)
+    const foldable = new Set(list.filter(p => canFold(p, now, stripBudget(list.length))).map(p => p.id))
+    if (foldable.size === 0) return { text: 'No agent strips to fold.' }
+    const isFolding = list.some(p => foldable.has(p.id) && !p.isFolded)
+    await update($, plans, all => all.map(p => (foldable.has(p.id) ? { ...p, isFolded: isFolding } : p)))
+
+    return { text: isFolding ? 'Agent strips folded; /progress-agents shows them again.' : 'Agent strips shown.' }
+  })
+
   on('command.run', { command: 'progress-clear' }, async $ => {
     glide.clear()
     await update($, plans, () => [])
@@ -1664,14 +1692,17 @@ export const register: Register = on => {
       const cols = Math.max(30, e.props.bodyColumns || 100)
       const hasClicks = e.viewport?.isFullscreen === true
       const titleW = Math.max(4, Math.min(Math.round(cols * 0.28), Math.max(...list.map(p => columnsOf(p.title)))))
-      const trackW = Math.max(12, Math.min(512, cols - titleW - (hasClicks ? 15 : 13)))
+      // where clicks land, a bar with agent strips gets a fold button before its ✕; every row keeps its cell, so the
+      // rows still line up
+      const hasFold = hasClicks && list.some(p => canFold(p, now, stripBudget(list.length)))
+      const trackW = Math.max(12, Math.min(512, cols - titleW - (hasClicks ? 15 : 13) - (hasFold ? 2 : 0)))
       band = { requestId: e.requestId, W: trackW, list }
       refusedAt = null
       refusedInRow = 0
       const tree = (
         <Box flexDirection="column">
           {list.map(p => {
-            const v = visibleAgents(p, now, stripBudget(list.length))
+            const v = shownAgents(p, now, stripBudget(list.length))
             const strips = v ? stripCells(v, trackW, now) : null
             const w = where(p)
             const pct = percent(p, w)
@@ -1684,6 +1715,11 @@ export const register: Register = on => {
                   </Box>
                   <Raster key={`track-${p.id}`} columns={trackW} rows={1} cells={trackCells(p, trackW, now)} />
                   <Text dimColor>{`${String(pct).padStart(3, FIGURE_SPACE)}%`}</Text>
+                  {hasFold ? (
+                    <Box width={1} flexShrink={0}>
+                      {canFold(p, now, stripBudget(list.length)) ? <Button key={`fold-${p.id}`} plain dimColor label={p.isFolded ? '▸' : '▾'} onPress={() => foldPlan($, p.id)} /> : null}
+                    </Box>
+                  ) : null}
                   {hasClicks ? <Button key={`close-${p.id}`} plain dimColor label="✕" onPress={() => dropPlan($, p.id)} /> : null}
                 </Box>
                 {p.note && p.state !== 'running' ? (
@@ -1713,16 +1749,18 @@ export const register: Register = on => {
     // so rows line up whatever their titles; the slack goes into the gap after the title.
     // Desktop reports ~8 CSS px per column; glyph, gaps, percent and the close button take ~126 px.
     const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...list.map(p => Math.round(textWidth(p.title, 6.4)))))
-    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140))
     await read($, tick)
     const now = await $.clock.now()
+    // a bar with agent strips gets a fold button before its ✕, in a cell every row keeps so the rows line up
+    const hasFold = list.some(p => canFold(p, now, stripBudget(list.length)))
+    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140 - (hasFold ? 24 : 0)))
     // a hairline between task bars, so each bar and its agent strips read as one group
     const divider = `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="1"><rect width="${total}" height="1" fill="#808080" fill-opacity=".22"/></svg>`
 
     return (
       <Box flexDirection="column" gap={1}>
         {list.flatMap((p, i) => {
-          const v = visibleAgents(p, now, stripBudget(list.length))
+          const v = shownAgents(p, now, stripBudget(list.length))
           const track = trackSvg(p, trackW)
           const hover = liveSource(track.overlay, now)
           const strips = v && Svg
@@ -1736,7 +1774,7 @@ export const register: Register = on => {
                 />
               ))
             : []
-          const agentsAlt = v ? `; agents: ${(p.agents ?? []).map(a => `${a.title} ${a.state}`).join(', ')}` : ''
+          const agentsAlt = canFold(p, now, stripBudget(list.length)) ? `; agents: ${(p.agents ?? []).map(a => `${a.title} ${a.state}`).join(', ')}` : ''
           const line = i > 0 && Svg ? [<Svg key={`div-${p.id}`} source={divider} alt="divider" width={total} height={1} />] : []
           const w = where(p)
           const pct = percent(p, w)
@@ -1772,6 +1810,11 @@ export const register: Register = on => {
                 </Text>
               )}
               <Text dimColor>{`${String(pct).padStart(3, FIGURE_SPACE)}%`}</Text>
+              {hasFold ? (
+                <Box width={2} flexShrink={0}>
+                  {canFold(p, now, stripBudget(list.length)) ? <Button key={`fold-${p.id}`} plain dimColor label={p.isFolded ? '▸' : '▾'} onPress={() => foldPlan($, p.id)} /> : null}
+                </Box>
+              ) : null}
               <Button key={`close-${p.id}`} plain dimColor label="✕" onPress={() => dropPlan($, p.id)} />
             </Box>,
           ]

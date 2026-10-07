@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` affiche ou masque les barres
 - `/progress-clear` supprime toutes les barres
+- `/progress-agents` replie les bandes d'agents sous les barres ou les réaffiche (le bouton ▾ à côté du ✕ d'une barre le fait pour cette barre)
 
 Le bouton **Progress** en bas fait la même chose que `/progress`.
 
