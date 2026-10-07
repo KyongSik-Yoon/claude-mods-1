@@ -961,7 +961,7 @@ const C = {
     const b = await desktop()
     await b.fold.props.onPress()
     const c = await desktop()
-    const ok = a.strips === 2 && a.fold.props.label === '▾' && !a.foldU && b.strips === 0 && b.fold.props.label === '▸' && !!E.bar('t') && c.strips === 2
+    const ok = a.strips === 2 && a.fold.props.label === '⌃' && !a.foldU && b.strips === 0 && b.fold.props.label === '⌄' && !!E.bar('t') && c.strips === 2
     return [`strips ${a.strips} → fold → ${b.strips} (${b.fold?.props.label}) → unfold → ${c.strips}; bar without agents has a button ${!!a.foldU}`, ok]
   },
   async folded_bar_in_the_terminal(E) {
@@ -1028,11 +1028,11 @@ const C = {
     await create(E)
     await E.spawn('ag1', 'Scan routes')
     const desktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
-    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 2).length
+    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 4).length
     const track = desktop.find(n => n.type === 'Svg' && /^Docs:/.test(n.props.alt)).props.width
     const terminal = await E.terminal(120, true)
     const columns = terminal.find(n => n.props?.key === 'track-u').props.columns
-    const ok = cells === 2 && track === plainTrack - 24 && columns === plainColumns - 2
+    const ok = cells === 2 && track === plainTrack - 32 && columns === plainColumns - 2
     return [`desktop cells ${cells}, track ${plainTrack} → ${track}; terminal track ${plainColumns} → ${columns}`, ok]
   },
   async folded_bar_on_the_desktop_counts_its_agents(E) {

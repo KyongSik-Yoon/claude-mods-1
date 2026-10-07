@@ -1785,9 +1785,10 @@ export const register: Register = on => {
     const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...list.map(p => Math.round(textWidth(p.title, 6.4)))))
     await read($, tick)
     const now = await $.clock.now()
-    // a bar with agent strips gets a fold button before its ✕, in a cell every row keeps so the rows line up
+    // a bar with agent strips gets a fold chevron before its ✕ (up folds, down shows), in a cell every row keeps so
+    // the rows line up; wide enough for the desktop's own button, which a narrower cell squeezes to a dot
     const hasFold = list.some(p => canFold(p, now, stripBudget(list.length)))
-    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140 - (hasFold ? 24 : 0)))
+    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140 - (hasFold ? 32 : 0)))
     // a hairline between task bars, so each bar and its agent strips read as one group
     const divider = `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="1"><rect width="${total}" height="1" fill="#808080" fill-opacity=".22"/></svg>`
 
@@ -1845,8 +1846,8 @@ export const register: Register = on => {
               )}
               <Text dimColor>{`${String(pct).padStart(3, FIGURE_SPACE)}%`}</Text>
               {hasFold ? (
-                <Box width={2} flexShrink={0}>
-                  {canFold(p, now, stripBudget(list.length)) ? <Button key={`fold-${p.id}`} plain dimColor label={p.isFolded ? '▸' : '▾'} onPress={() => foldPlan($, p.id)} /> : null}
+                <Box width={4} flexShrink={0}>
+                  {canFold(p, now, stripBudget(list.length)) ? <Button key={`fold-${p.id}`} plain dimColor label={p.isFolded ? '⌄' : '⌃'} onPress={() => foldPlan($, p.id)} /> : null}
                 </Box>
               ) : null}
               <Button key={`close-${p.id}`} plain dimColor label="✕" onPress={() => dropPlan($, p.id)} />
