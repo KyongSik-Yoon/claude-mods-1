@@ -694,8 +694,8 @@ const cellChar = (ch: string) => {
 const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
 const clusters = (s: string): string[] => (segmenter ? Array.from(segmenter.segment(s), x => x.segment) : [...s])
 const isEmojiCluster = (c: string) =>
-  /⃣|\p{Regional_Indicator}/u.test(c) ||
-  (/\p{Extended_Pictographic}/u.test(c) && (/[️‍\u{1F3FB}-\u{1F3FF}]/u.test(c) || (c.codePointAt(0) ?? 0) > 0xffff))
+  /\u20E3|\p{Regional_Indicator}/u.test(c) ||
+  (/\p{Extended_Pictographic}/u.test(c) && (/[\uFE0F\u200D\u{1F3FB}-\u{1F3FF}]/u.test(c) || (c.codePointAt(0) ?? 0) > 0xffff))
 // the cells a string takes inside a Raster: a dot for an emoji sequence, each other character as cellChar draws it
 const cellText = (s: string) => clusters(s).map(c => (isEmojiCluster(c) ? '·' : [...c].map(cellChar).join(''))).join('')
 const cellsOf = (s: string) => [...cellText(s)].length
