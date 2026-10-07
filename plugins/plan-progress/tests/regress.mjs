@@ -35,6 +35,14 @@ async function withMachine(set, run) {
 }
 const pct = async (E, id) => (await E.view(id)).alt.match(/\d+%/)?.[0]
 // every element of a drawn tree, flat
+// WCAG 2.x contrast of two colours, and a colour laid over another at some opacity, as a browser paints them
+const toRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
+const luminance = c => {
+  const l = c.map(v => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2]
+}
+const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05)
+const over = (back, c, a) => back.map((v, i) => Math.round(v + (c[i] - v) * a))
 const walkAll = (n, out = []) => {
   if (Array.isArray(n)) n.forEach(c => walkAll(c, out))
   else if (n && typeof n === 'object') {
@@ -1132,6 +1140,103 @@ const C = {
     const wav = E.procEnvs[at]?.PLAN_PROGRESS_WAV ?? ''
     const ok = at >= 0 && !E.procs[at].includes("O'Brien") && wav.includes("O'Brien") && wav.endsWith('decision.wav')
     return [`command quotes the path ${E.procs[at]?.includes("O'Brien")}, env ${wav.slice(-40)}`, ok]
+  },
+  async desktop_strip_text_reads_in_light_and_dark(E) {
+    // issue #13: on the desktop a strip is a picture over a background the plugin is never told; every word on it
+    // reads at WCAG AA in either scheme its media query picks, over the strip's own backing
+    await create(E)
+    for (const [id, title] of [['g1', 'Run the tests'], ['g2', 'Ask first'], ['g3', 'Break'], ['g4', 'Old one'], ['g5', 'Old two'], ['g6', 'Old three'], ['g7', 'Last one']]) await E.spawn(id, title)
+    await E.step('g1', 'high')
+    await E.agentTool('g1', 'Bash')
+    await E.hold('g2')
+    await E.turnComplete('g3', 'error')
+    for (const id of ['g4', 'g5', 'g6', 'g7']) await E.turnComplete(id)
+    const v = await E.view('t')
+    const sheet = v.strips[0]?.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? ''
+    const at = sheet.indexOf('@media (prefers-color-scheme:light){')
+    const rules = css => Object.fromEntries([...css.matchAll(/\.([\w-]+)\{(?:fill|color):(#[0-9A-Fa-f]{6})\}/g)].map(m => [m[1], toRgb(m[2])]))
+    const base = rules(at < 0 ? sheet : sheet.slice(0, at))
+    const schemes = { dark: base, light: { ...base, ...(at < 0 ? {} : rules(sheet.slice(at))) } }
+    const worst = {}
+    const seen = new Set()
+    for (const [name, k] of Object.entries(schemes)) {
+      let min = Infinity
+      const check = (fg, bg, what) => {
+        if (!fg || !bg) {
+          seen.add(`${name} ${what} unpaired`)
+          min = 0
+          return
+        }
+        min = Math.min(min, contrast(fg, bg))
+      }
+      for (const src of v.strips) {
+        if (!src.includes('class="sb"')) seen.add('no backing')
+        if (/style="fill:/.test(src)) seen.add('inline fill')
+        const tint = src.match(/fill="(#[0-9A-Fa-f]{6})" fill-opacity="(\.\d+)"/)
+        const back = tint && k.sb ? over(k.sb, toRgb(tint[1]), Number(tint[2])) : null
+        if (src.includes('class="sn"')) check(k.sn, back, 'name')
+        if (/class="(?:sn )?st"/.test(src)) check(k.st, back, 'dim')
+        for (const m of src.matchAll(/ w-(\w+)/g)) check(k[`w-${m[1]}`], back, `word ${m[1]}`)
+        if (src.includes('class="gu"')) check(k.gu, k.sb, 'gutter')
+        if (src.includes('class="gm"')) check(k.gm, k.sb, 'more gutter')
+      }
+      worst[name] = min
+    }
+    const words = new Set([...v.strips.join('').matchAll(/class="sn w-(\w+)/g)].map(m => m[1]))
+    const kc = v.track.match(/\.kc\{[^}]*\}/)?.[0] ?? ''
+    const ok = worst.dark >= 4.5 && worst.light >= 4.5 && seen.size === 0 && words.has('running') && words.has('waiting') && v.strips.some(s => s.includes('class="gm"')) && !kc.includes('opacity')
+    return [`worst dark ${worst.dark.toFixed(2)}, light ${worst.light.toFixed(2)}; words ${[...words]}; ${[...seen].join(', ') || 'backed, no inline fills'}; pill count ${kc}`, ok]
+  },
+  async terminal_strip_text_reads_in_light_and_dark() {
+    // issue #13 in the terminal: the name, its model, the tool word, the time and the pill's count read at AA in either
+    // theme, as the engine paints them (4-bit colour)
+    const q = c => c.map(v => Math.round(v / 17) * 17)
+    const parts = c => [(c >> 16) & 255, (c >> 8) & 255, c & 255]
+    const worst = {}
+    for (const theme of ['light', 'dark']) {
+      await withMachine({ MAC: false, THEME: theme }, async () => {
+        const F = await boot(file)
+        await create(F)
+        for (const [id, title] of [['g1', 'Run the tests'], ['g2', 'Ask first'], ['g3', 'Break'], ['g4', 'Old one'], ['g5', 'Old two'], ['g6', 'Old three'], ['g7', 'Last one']]) await F.spawn(id, title)
+        await F.step('g1', 'high')
+        await F.agentTool('g1', 'Bash')
+        await F.hold('g2')
+        await F.turnComplete('g3', 'error')
+        for (const id of ['g4', 'g5', 'g6', 'g7']) await F.turnComplete(id)
+        const nodes = await F.terminal(120)
+        let min = Infinity
+        for (const key of ['strips-t', 'track-t']) {
+          const r = nodes.find(n => n.type === 'Raster' && n.props.key === key)
+          const w = new Uint32Array(Uint8Array.from(Buffer.from(r?.props.cells ?? '', 'base64')).buffer)
+          if (w.length === 0) min = 0
+          for (let i = 0; i < w.length; i += 3) {
+            const ch = String.fromCodePoint(w[i])
+            if (ch === ' ' || ch === '●' || ch === '│' || (w[i] >= 0x2800 && w[i] <= 0x28ff) || w[i + 1] & 0x01000000) continue
+            min = Math.min(min, contrast(q(parts(w[i + 1])), q(parts(w[i + 2]))))
+          }
+        }
+        worst[theme] = min
+      })
+    }
+    return [`worst light ${worst.light.toFixed(2)}, dark ${worst.dark.toFixed(2)}`, worst.light >= 4.5 && worst.dark >= 4.5]
+  },
+  async bars_keep_what_is_drawn_under_them(E) {
+    // issue #15: the host's own line above the prompt, and other plugins', stay under the bars on both surfaces
+    let asked = 0
+    globalThis.BELOW = () => (asked++, { type: 'Text', props: { key: 'host' }, children: ['host line'] })
+    try {
+      await create(E)
+      const desktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
+      const terminal = await E.terminal(120)
+      const deskHost = desktop.findIndex(n => n.props?.key === 'host')
+      const termHost = terminal.findIndex(n => n.props?.key === 'host')
+      const deskBar = desktop.findIndex(n => n.type === 'Svg')
+      const termBar = terminal.findIndex(n => n.type === 'Raster')
+      const ok = deskBar >= 0 && deskHost > deskBar && termBar >= 0 && termHost > termBar && asked === 2
+      return [`desktop bar at ${deskBar}, host at ${deskHost}; terminal bar at ${termBar}, host at ${termHost}; next asked ${asked}x in 2 draws`, ok]
+    } finally {
+      delete globalThis.BELOW
+    }
   },
 }
 

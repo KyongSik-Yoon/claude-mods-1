@@ -470,7 +470,7 @@ function drawTrack(p: Plan, W: number): Track {
 .t1{animation-duration:2.8s;animation-delay:-.7s}.t2{animation-duration:1.9s;animation-delay:-1.3s}.t3{animation-duration:3.3s;animation-delay:-.4s}
 @keyframes tw{0%,100%{opacity:1}50%{opacity:.45}}
 .kt{font:500 12px 'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;fill:${INK}}
-.kc{font-weight:400;fill-opacity:.75}
+.kc{font-weight:400}
 @media (prefers-reduced-motion:reduce){.t0,.t1,.t2,.t3{animation:none}}
 </style>`
   const hoverStyle = `<style>
@@ -502,6 +502,16 @@ const AGENT_COLOR: Record<AgentRun['state'], string> = {
   waiting: STATE_COLOR.needs_input,
   done: STATE_COLOR.done,
   error: STATE_COLOR.error,
+}
+
+// strip text that reads at WCAG AA (4.5:1) on its tint, in a dark and a light scheme (issue #13). The desktop draws
+// a strip as a picture over the app's background, which no event tells the plugin: the picture carries both sets,
+// its media query picks one, and it lays its own opaque page under the tint, so a wrong guess still pairs the text
+// with its backing. The terminal picks by isLight
+type Scheme = { page: string; ink: string; dim: string; gutter: string; more: string; word: Record<AgentRun['state'], string> }
+const SCHEMES: Record<'dark' | 'light', Scheme> = {
+  dark: { page: '#1F1E1D', ink: '#F0EEFC', dim: '#A7A5AE', gutter: '#A8A69E', more: '#8A8984', word: { running: '#9C85D8', waiting: '#C0883B', done: '#4FA569', error: '#D67278' } },
+  light: { page: '#FFFFFF', ink: '#222226', dim: '#5B5B5E', gutter: '#5F5E59', more: '#6F6D66', word: { running: '#6A4DB2', waiting: '#905300', done: '#157632', error: '#B13038' } },
 }
 
 // the desktop drops an Svg whose alt is empty, so every drawing says what it shows
@@ -544,7 +554,7 @@ const shownAgents = (p: Plan, now: number, max: number) => (p.isFolded ? null : 
 const canFold = (p: Plan, now: number, max: number) => visibleAgents(p, now, max) !== null
 
 // what each strip showed last time it was drawn, so a change morphs from the old status instead of jumping
-const lastStrip = new Map<string, { tool: string; color: string }>()
+const lastStrip = new Map<string, { tool: string; color: string; state: AgentRun['state'] }>()
 const MORPH = '.2s'
 
 // a strip's markup per agent object: drawn once per change, so its morph plays once and later redraws match
@@ -577,9 +587,12 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
   const isNarrow = W < NARROW
   const SW = W - GUTTER
   const rows: StripRow[] = []
-  const gutter = (y: number, label: string, color: string) =>
-    `<g transform="translate(1 ${y + 2}) scale(.5)" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${BOT}</g>` +
-    `<text x="16" y="${y + 11.5}" class="sn sg" style="fill:${color}">${label}</text>`
+  // the icon and number take their colour from the scheme's class (gu for an agent, gm for the more line)
+  const gutter = (y: number, label: string, cls: string) =>
+    `<g class="${cls}"><g transform="translate(1 ${y + 2}) scale(.5)" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${BOT}</g>` +
+    `<text x="16" y="${y + 11.5}" class="sn sg">${label}</text></g>`
+  // the scheme's page under a tint, so the tint and the text over it look the same on any background
+  const backing = (y: number) => `<rect class="sb" x="${GUTTER}" y="${y}" width="${SW}" height="${STRIP_H}" rx="${STRIP_H / 2}"/>`
   v.shown.forEach((a, i) => {
     // the first strip keeps a little room from the track above it
     const y = i === 0 ? 5 : STRIP_GAP
@@ -604,7 +617,7 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
     const px = [...dots].map(([cls, d]) => `<path class="${cls}" fill="${c}" fill-opacity=".32" d="${d}"/>`).join('')
     // a status change: the old word blurs out while the new one blurs in, and the tint flows to the new colour
     const was = lastStrip.get(a.id)
-    lastStrip.set(a.id, { tool: word, color: c })
+    lastStrip.set(a.id, { tool: word, color: c, state: a.state })
     const isWordChanged = was !== undefined && was.tool !== word
     const flow = (attr: string) => (was && was.color !== c ? `<animate attributeName="${attr}" from="${was.color}" to="${c}" dur="${MORPH}" fill="freeze"/>` : '')
     // the tool word sits at the right, just before the clock, so the name and its model get the rest of the row
@@ -623,11 +636,12 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
         : `<text x="${W - 9}" y="${y + 11.5}" text-anchor="end" class="sn st">${elapsed(a.endedAt - a.startedAt)}</text>`
     const tool = isNarrow
       ? ''
-      : (isWordChanged && was.tool ? `<text x="${toolEnd}" y="${y + 11.5}" text-anchor="end" class="sn mo" style="fill:${was.color}">${esc(was.tool)}</text>` : '') +
-        (word ? `<text x="${toolEnd}" y="${y + 11.5}" text-anchor="end" class="sn${isWordChanged ? ' mi' : ''}" style="fill:${c}">${esc(word)}</text>` : '') +
+      : (isWordChanged && was.tool ? `<text x="${toolEnd}" y="${y + 11.5}" text-anchor="end" class="sn mo w-${was.state}">${esc(was.tool)}</text>` : '') +
+        (word ? `<text x="${toolEnd}" y="${y + 11.5}" text-anchor="end" class="sn w-${a.state}${isWordChanged ? ' mi' : ''}">${esc(word)}</text>` : '') +
         time
     const html =
-      gutter(y, String(all.indexOf(a) + 1), '#A8A69E') +
+      gutter(y, String(all.indexOf(a) + 1), 'gu') +
+      backing(y) +
       `<rect x="${GUTTER}" y="${y}" width="${SW}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${c}" fill-opacity=".15">${flow('fill')}</rect>${px}` +
       `<circle cx="${GUTTER + 10 + indent}" cy="${y + STRIP_H / 2}" r="3" fill="${c}"${a.state === 'running' ? ' class="sd"' : ''}>${flow('fill')}</circle>` +
       `<text x="${nameX}" y="${y + 11.5}" class="sn">${nameMarkup(name)}</text>` +
@@ -642,7 +656,8 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
       key: '+',
       height: y + STRIP_H,
       html:
-        gutter(y, `+${v.hidden.length}`, '#8A8984') +
+        gutter(y, `+${v.hidden.length}`, 'gm') +
+        backing(y) +
         `<rect x="${GUTTER}" y="${y}" width="${SW}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="#808080" fill-opacity=".14"/>` +
         `<text x="${GUTTER + 10}" y="${y + 11.5}" class="sn st">${plural(v.hidden.length, 'more agent')} · ${doneCount} done</text>`,
     })
@@ -650,7 +665,13 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
   return rows
 }
 
-const STRIP_STYLE = `<style>.sn{font:400 11.5px 'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;fill:#F0EEFC}.st{fill-opacity:.65}.sg{font-weight:500;font-variant-numeric:tabular-nums}
+// a scheme's colours as the strip's classes; in the stylesheet the light set follows the dark one, so it wins where
+// its query holds, and the dim and tool word follow the name they colour over
+const schemeCss = (s: Scheme) =>
+  `.sb{fill:${s.page}}.sn{fill:${s.ink}}.st{fill:${s.dim}}.gu{color:${s.gutter}}.gm{color:${s.more}}` +
+  Object.entries(s.word).map(([state, c]) => `.w-${state}{fill:${c}}`).join('')
+const STRIP_STYLE = `<style>.sn{font:400 11.5px 'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif}.sg{font-weight:500;font-variant-numeric:tabular-nums}
+${schemeCss(SCHEMES.dark)}@media (prefers-color-scheme:light){${schemeCss(SCHEMES.light)}}.gu .sn,.gm .sn{fill:currentColor}
 .sd{animation:sp 1.1s ease-in-out infinite}@keyframes sp{50%{opacity:.3}}
 .mi{animation:mi ${MORPH} ease-out both}@keyframes mi{from{opacity:0;filter:blur(3px)}}
 .mo{animation:mo ${MORPH} ease-in both}@keyframes mo{to{opacity:0;filter:blur(3px)}}
@@ -667,6 +688,7 @@ const DEFAULT = 0x01000000
 let isLight = false
 const termBg = () => (isLight ? [255, 255, 255] : [24, 24, 27])
 const termFg = () => (isLight ? [34, 34, 38] : [240, 238, 252])
+const scheme = () => SCHEMES[isLight ? 'light' : 'dark']
 const pack = (c: number[]) => ((c[0] ?? 0) << 16) | ((c[1] ?? 0) << 8) | (c[2] ?? 0)
 // a Raster cell takes one printable BMP character exactly one column wide, as the engine measures it
 // (Bun.stringWidth, ambiguous narrow); any other character refuses the whole tree and every bar vanishes.
@@ -875,7 +897,7 @@ function trackCells(p: Plan, W: number, t: number): string {
   pill(g, 0, kx, kx + kw, () => color)
   let at = kx + 1
   at += g.text(at, 0, shown, white, pack(color))
-  if (count) g.text(at + 1, 0, count, pack(mix([255, 255, 255], color, 0.3)), pack(color))
+  if (count) g.text(at + 1, 0, count, white, pack(color))
   return g.encode()
 }
 
@@ -923,21 +945,22 @@ function stripCells(v: { shown: AgentRun[]; hidden: AgentRun[] }, W: number, now
     const head = cut > 0 ? name.slice(0, cut) : name
     for (let i = -1; i < name.length + 1 && at + i < W - 1; i++) g.set(at + i, y, ' ', DEFAULT, pack(tint))
     at += g.text(at, y, head, text, pack(tint))
-    if (head !== name) g.text(at, y, name.slice(head.length), pack(mix(termFg(), tint, 0.4)), pack(tint))
+    const dim = pack(hex(scheme().dim))
+    if (head !== name) g.text(at, y, name.slice(head.length), dim, pack(tint))
     if (narrow) return
     if (word) {
       for (let i = -1; i <= word.length; i++) g.set(toolAt + i, y, ' ', DEFAULT, pack(tint))
-      g.text(toolAt, y, word, pack(c), pack(tint))
+      g.text(toolAt, y, word, pack(hex(scheme().word[a.state])), pack(tint))
     }
     for (let i = -1; i < time.length; i++) g.set(tx + i, y, ' ', DEFAULT, pack(tint))
-    g.text(tx, y, time, pack(mix(termFg(), tint, 0.35)), pack(tint))
+    g.text(tx, y, time, dim, pack(tint))
   })
   if (v.hidden.length > 0) {
     const y = v.shown.length
     const tint = mix(back, [128, 128, 128], 0.16)
     pill(g, y, 0, W, () => tint)
     const doneCount = v.hidden.filter(a => a.state === 'done').length
-    g.text(2, y, fit(`+${plural(v.hidden.length, 'more agent')} · ${doneCount} done`, W - 4), pack(mix(termFg(), tint, 0.35)), pack(tint))
+    g.text(2, y, fit(`+${plural(v.hidden.length, 'more agent')} · ${doneCount} done`, W - 4), pack(hex(scheme().dim)), pack(tint))
   }
   return { cells: g.encode(), rows }
 }
@@ -1685,6 +1708,8 @@ export const register: Register = on => {
       band = null
       return next(e)
     }
+    // what the host and the plugins after this one draw here stays, under the bars, next to the prompt (issue #15)
+    const below = await next(e)
     if (e.surface === 'terminal') {
       const { Box, Button, Text, Raster } = $.ui.resolve(e)
       await read($, tick)
@@ -1739,7 +1764,14 @@ export const register: Register = on => {
       )
       // the cells above start a glide where the bar moved; the frames that carry it start with them
       syncFrames($, now)
-      return tree
+      return below ? (
+        <Box flexDirection="column">
+          {tree}
+          {below}
+        </Box>
+      ) : (
+        tree
+      )
     }
     const t = $.ui.resolve(e)
     const { Box, Button, Text } = t
@@ -1757,7 +1789,7 @@ export const register: Register = on => {
     // a hairline between task bars, so each bar and its agent strips read as one group
     const divider = `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="1"><rect width="${total}" height="1" fill="#808080" fill-opacity=".22"/></svg>`
 
-    return (
+    const bars = (
       <Box flexDirection="column" gap={1}>
         {list.flatMap((p, i) => {
           const v = shownAgents(p, now, stripBudget(list.length))
@@ -1820,6 +1852,14 @@ export const register: Register = on => {
           ]
         })}
       </Box>
+    )
+    return below ? (
+      <Box flexDirection="column">
+        {bars}
+        {below}
+      </Box>
+    ) : (
+      bars
     )
   })
 

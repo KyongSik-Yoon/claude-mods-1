@@ -74,6 +74,9 @@ export async function boot(file, kept = new Map()) {
     },
   }
   const matches = (m, e) => !m || Object.entries(m).every(([k, v]) => e[k] === v)
+  // what the host and the plugins after this one draw above the prompt: nothing, unless globalThis.BELOW gives a tree
+  // (or a function making one, called once per render)
+  const below = () => (typeof globalThis.BELOW === 'function' ? globalThis.BELOW() : (globalThis.BELOW ?? null))
   const dispatch = (event, e, core) => {
     const chain = hooks.filter(h => h.event === event && matches(h.matcher, e))
     const run = (i, ev) => (i < chain.length ? chain[i].fn($, ev, ev2 => run(i + 1, ev2)) : Promise.resolve(core(ev)))
@@ -99,7 +102,7 @@ export async function boot(file, kept = new Map()) {
     setTheme: value => dispatch('config.set', { key: 'theme', value, previous: globalThis.THEME ?? 'dark' }, () => ({ value })),
     coreRuns,
     // any event straight into the hooks, the core answering nothing
-    raw: (event, e) => dispatch(event, e, () => ({})),
+    raw: (event, e) => dispatch(event, e, () => (event === 'ui.render' ? below() : {})),
     get toolSpec() {
       return toolSpec
     },
@@ -161,7 +164,7 @@ export async function boot(file, kept = new Map()) {
     steps: id => (api.bar(id)?.stages ?? []).flatMap(s => s.steps.map(st => `${st.title}:${st.status}`)).join(' '),
     // what the person sees, read from the real AbovePrompt render: the Svg alt text and source of one bar
     svgs: async () => {
-      const tree = await dispatch('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: globalThis.COLS ?? 120, hasSurvey: false } }, () => null)
+      const tree = await dispatch('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: globalThis.COLS ?? 120, hasSurvey: false } }, below)
       const found = []
       const walk = n => {
         if (Array.isArray(n)) return n.forEach(walk)
@@ -173,7 +176,7 @@ export async function boot(file, kept = new Map()) {
       return found
     },
     terminal: async (cols = 120, isFullscreen = false) => {
-      const tree = await dispatch('ui.render', { component: 'AbovePrompt', surface: 'terminal', requestId: 'band', viewport: { columns: cols, rows: 40, isFullscreen }, props: { bodyColumns: cols, hasSurvey: false } }, () => null)
+      const tree = await dispatch('ui.render', { component: 'AbovePrompt', surface: 'terminal', requestId: 'band', viewport: { columns: cols, rows: 40, isFullscreen }, props: { bodyColumns: cols, hasSurvey: false } }, below)
       const found = []
       const walk = n => {
         if (Array.isArray(n)) return n.forEach(walk)
@@ -197,7 +200,7 @@ export async function boot(file, kept = new Map()) {
       return found
     },
     view: async id => {
-      const tree = await dispatch('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }, () => null)
+      const tree = await dispatch('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }, below)
       const found = []
       // a strip's drawing sits in a keyed row with its open button; it takes the row's key
       const walk = (n, key) => {
