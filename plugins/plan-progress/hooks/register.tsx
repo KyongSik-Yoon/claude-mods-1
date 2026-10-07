@@ -564,6 +564,17 @@ const drawnRows = new WeakMap<AgentRun, { key: string; html: string }>()
 // one tinted strip per agent: state colour, name, what it does now and for how long; not a progress bar
 // Lucide "bot", drawn at 12 px in the gutter before each strip
 const BOT = '<rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8M2 14h2M20 14h2M15 13v2M9 13v2"/>'
+
+// the desktop's fold control: Lucide "chevron-up" (fold) or "chevron-down" (show); a Button's label is text only, so
+// the picture is centred in the cell and a blank Button over it, centred the same way, takes the presses and draws its
+// own hover and focus ring around it (a picture laid over the Button would take the pointer)
+const FOLD_W = 16
+const FOLD_H = 16
+const foldChip = (isFolded: boolean) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${FOLD_W}" height="${FOLD_H}" viewBox="0 0 ${FOLD_W} ${FOLD_H}"><style>.fc{stroke:#C2C0B6}` +
+  `@media (prefers-color-scheme:light){.fc{stroke:#3D3D3A}}</style>` +
+  `<g transform="translate(${(FOLD_W - 16) / 2} ${(FOLD_H - 16) / 2}) scale(${16 / 24})" fill="none" class="fc" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
+  `<path d="${isFolded ? 'm6 9 6 6 6-6' : 'm18 15-6-6-6 6'}"/></g></svg>`
 const GUTTER = 36 // icon and agent number, left of the strip
 
 // claude-haiku-4-5-20251001 -> haiku 4.5; an alias stays as given
@@ -1788,7 +1799,7 @@ export const register: Register = on => {
     // a bar with agent strips gets a fold chevron before its ✕ (up folds, down shows), in a cell every row keeps so
     // the rows line up; wide enough for the desktop's own button, which a narrower cell squeezes to a dot
     const hasFold = list.some(p => canFold(p, now, stripBudget(list.length)))
-    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140 - (hasFold ? 32 : 0)))
+    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140 - (hasFold ? 40 : 0)))
     // a hairline between task bars, so each bar and its agent strips read as one group
     const divider = `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="1"><rect width="${total}" height="1" fill="#808080" fill-opacity=".22"/></svg>`
 
@@ -1846,8 +1857,19 @@ export const register: Register = on => {
               )}
               <Text dimColor>{`${String(pct).padStart(3, FIGURE_SPACE)}%`}</Text>
               {hasFold ? (
-                <Box width={4} flexShrink={0}>
-                  {canFold(p, now, stripBudget(list.length)) ? <Button key={`fold-${p.id}`} plain dimColor label={p.isFolded ? '⌄' : '⌃'} onPress={() => foldPlan($, p.id)} /> : null}
+                <Box width={5} flexShrink={0}>
+                  {canFold(p, now, stripBudget(list.length)) ? (
+                    Svg ? (
+                      <Box key={`foldchip-${p.id}`} width={5} height={1} justifyContent="center" alignItems="center">
+                        <Svg source={foldChip(!!p.isFolded)} alt={p.isFolded ? 'show the agents' : 'fold the agents'} width={FOLD_W} height={FOLD_H} />
+                        <Box position="absolute" top={0} left={0} right={0} bottom={0} justifyContent="center" alignItems="center">
+                          <Button key={`fold-${p.id}`} plain label={'  '} onPress={() => foldPlan($, p.id)} />
+                        </Box>
+                      </Box>
+                    ) : (
+                      <Button key={`fold-${p.id}`} plain dimColor label={p.isFolded ? '⌄' : '⌃'} onPress={() => foldPlan($, p.id)} />
+                    )
+                  ) : null}
                 </Box>
               ) : null}
               <Button key={`close-${p.id}`} plain dimColor label="✕" onPress={() => dropPlan($, p.id)} />

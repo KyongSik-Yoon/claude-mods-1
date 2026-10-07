@@ -945,7 +945,7 @@ const C = {
     return [depths || 'no agents bar', depths === 'C1:0 C2:0']
   },
   async fold_button_folds_a_bars_agent_strips(E) {
-    // issue #11: the ▾ button before ✕ folds the strips away and keeps the bar; ▸ shows them again
+    // issue #11: the chevron before ✕ folds the strips away and keeps the bar; ▸ shows them again
     await E.turnStart()
     // agents land on the newest open bar, so the bar that gets them is made last
     await create(E, 'u', three(), 'Docs')
@@ -954,15 +954,17 @@ const C = {
     await E.spawn('ag2', 'Read cart store')
     const desktop = async () => {
       const nodes = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
-      return { fold: nodes.find(n => n.props?.key === 'fold-t'), foldU: nodes.find(n => n.props?.key === 'fold-u'), strips: nodes.filter(n => String(n.props?.key ?? '').startsWith('strip-t-')).length }
+      const chip = nodes.find(n => n.props?.key === 'foldchip-t')
+      const icon = walkAll(chip?.children ?? []).find(n => n.type === 'Svg')?.props.source ?? ''
+      return { fold: nodes.find(n => n.props?.key === 'fold-t'), arrow: icon.includes('m6 9 6 6 6-6') ? 'down' : icon.includes('m18 15-6-6-6 6') ? 'up' : 'none', foldU: nodes.find(n => n.props?.key === 'fold-u'), strips: nodes.filter(n => String(n.props?.key ?? '').startsWith('strip-t-')).length }
     }
     const a = await desktop()
     await a.fold.props.onPress()
     const b = await desktop()
     await b.fold.props.onPress()
     const c = await desktop()
-    const ok = a.strips === 2 && a.fold.props.label === '⌃' && !a.foldU && b.strips === 0 && b.fold.props.label === '⌄' && !!E.bar('t') && c.strips === 2
-    return [`strips ${a.strips} → fold → ${b.strips} (${b.fold?.props.label}) → unfold → ${c.strips}; bar without agents has a button ${!!a.foldU}`, ok]
+    const ok = a.strips === 2 && a.arrow === 'up' && !a.foldU && b.strips === 0 && b.arrow === 'down' && !!E.bar('t') && c.strips === 2
+    return [`strips ${a.strips} → fold → ${b.strips} (arrow ${a.arrow} → ${b.arrow}) → unfold → ${c.strips}; bar without agents has a button ${!!a.foldU}`, ok]
   },
   async folded_bar_in_the_terminal(E) {
     // fullscreen: the button and every row keeping its cell; outside fullscreen no button; folded: no strips and no
@@ -1028,11 +1030,11 @@ const C = {
     await create(E)
     await E.spawn('ag1', 'Scan routes')
     const desktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
-    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 4).length
+    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 5 && !n.props.key).length
     const track = desktop.find(n => n.type === 'Svg' && /^Docs:/.test(n.props.alt)).props.width
     const terminal = await E.terminal(120, true)
     const columns = terminal.find(n => n.props?.key === 'track-u').props.columns
-    const ok = cells === 2 && track === plainTrack - 32 && columns === plainColumns - 2
+    const ok = cells === 2 && track === plainTrack - 40 && columns === plainColumns - 2
     return [`desktop cells ${cells}, track ${plainTrack} → ${track}; terminal track ${plainColumns} → ${columns}`, ok]
   },
   async folded_bar_on_the_desktop_counts_its_agents(E) {
