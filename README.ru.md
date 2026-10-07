@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` показывает или скрывает полосы
 - `/progress-clear` удаляет все полосы
+- `/progress-agents` сворачивает строки агентов под полосами или показывает их снова (кнопка ▾ рядом с ✕ полосы делает это только для неё)
 
 Кнопка **Progress** внизу делает то же, что `/progress`.
 

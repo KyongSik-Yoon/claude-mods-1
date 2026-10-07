@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` バーの表示・非表示を切り替え
 - `/progress-clear` すべてのバーを削除
+- `/progress-agents` バーの下のエージェント行を折りたたむ・再表示する（バーの ✕ の横の ▾ ボタンはそのバーだけ）
 
 フッターの **Progress** ボタンは `/progress` と同じ動作です。
 

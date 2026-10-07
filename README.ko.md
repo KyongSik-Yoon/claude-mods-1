@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` 막대 표시/숨기기
 - `/progress-clear` 모든 막대 삭제
+- `/progress-agents` 막대 아래의 에이전트 줄을 접거나 다시 표시 (막대의 ✕ 옆 ▾ 버튼은 그 막대만)
 
 하단의 **Progress** 버튼은 `/progress`와 같은 동작을 합니다.
 

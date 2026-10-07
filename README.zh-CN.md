@@ -41,6 +41,7 @@ claude plugin update plan-progress@zycck-mods
 
 - `/progress` 显示或隐藏进度条
 - `/progress-clear` 移除所有进度条
+- `/progress-agents` 折叠或重新显示进度条下方的代理行（进度条 ✕ 旁的 ▾ 按钮只作用于该条）
 
 底部的 **Progress** 按钮与 `/progress` 作用相同。
 

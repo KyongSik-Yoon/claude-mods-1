@@ -34,6 +34,15 @@ async function withMachine(set, run) {
   }
 }
 const pct = async (E, id) => (await E.view(id)).alt.match(/\d+%/)?.[0]
+// every element of a drawn tree, flat
+const walkAll = (n, out = []) => {
+  if (Array.isArray(n)) n.forEach(c => walkAll(c, out))
+  else if (n && typeof n === 'object') {
+    out.push(n)
+    ;(n.children ?? []).forEach(c => walkAll(c, out))
+  }
+  return out
+}
 
 const C = {
   async T01_next(E) {
@@ -926,6 +935,127 @@ const C = {
     await E.spawn('C2', 'Second child', 'P')
     const depths = (E.bar('agents:auto')?.agents ?? []).map(a => `${a.id}:${a.depth}`).join(' ')
     return [depths || 'no agents bar', depths === 'C1:0 C2:0']
+  },
+  async fold_button_folds_a_bars_agent_strips(E) {
+    // issue #11: the ▾ button before ✕ folds the strips away and keeps the bar; ▸ shows them again
+    await E.turnStart()
+    // agents land on the newest open bar, so the bar that gets them is made last
+    await create(E, 'u', three(), 'Docs')
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    await E.spawn('ag2', 'Read cart store')
+    const desktop = async () => {
+      const nodes = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
+      return { fold: nodes.find(n => n.props?.key === 'fold-t'), foldU: nodes.find(n => n.props?.key === 'fold-u'), strips: nodes.filter(n => String(n.props?.key ?? '').startsWith('strip-t-')).length }
+    }
+    const a = await desktop()
+    await a.fold.props.onPress()
+    const b = await desktop()
+    await b.fold.props.onPress()
+    const c = await desktop()
+    const ok = a.strips === 2 && a.fold.props.label === '▾' && !a.foldU && b.strips === 0 && b.fold.props.label === '▸' && !!E.bar('t') && c.strips === 2
+    return [`strips ${a.strips} → fold → ${b.strips} (${b.fold?.props.label}) → unfold → ${c.strips}; bar without agents has a button ${!!a.foldU}`, ok]
+  },
+  async folded_bar_in_the_terminal(E) {
+    // fullscreen: the button and every row keeping its cell; outside fullscreen no button; folded: no strips and no
+    // strip blits, so the frames never hit a Raster that is gone
+    await E.turnStart()
+    // agents land on the newest open bar, so the bar that gets them is made last
+    await create(E, 'u', three(), 'Docs')
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    const full = await E.terminal(120, true)
+    const cells = full.filter(n => n.type === 'Box' && n.props.width === 1).length
+    const button = full.find(n => n.props?.key === 'fold-t')
+    const plain = (await E.terminal(120)).some(n => n.props?.key === 'fold-t')
+    await button.props.onPress()
+    const folded = await E.terminal(120)
+    const from = E.blits.length
+    for (let i = 0; i < 5; i++) {
+      E.tick(33)
+      await E.frameTick()
+    }
+    const stripBlits = E.blits.slice(from).filter(b => b.key.startsWith('strips-')).length
+    const hasStrips = folded.some(n => n.type === 'Raster' && n.props.key === 'strips-t')
+    const ok = cells === 2 && !!button && !plain && !hasStrips && stripBlits === 0 && E.blits.length > from
+    return [`fold cells ${cells}, button ${!!button}, outside fullscreen ${plain}; folded: strips ${hasStrips}, strip blits ${stripBlits}`, ok]
+  },
+  async progress_agents_folds_every_bar(E) {
+    const none = await E.command('progress-agents')
+    await E.turnStart()
+    // agents land on the newest open bar: v gets none, u and t one each
+    await create(E, 'v', three(), 'Notes')
+    await create(E, 'u', three(), 'Docs')
+    await E.spawn('a1', 'Scan routes')
+    await create(E)
+    await E.spawn('a2', 'Read cart store')
+    const a = await E.command('progress-agents')
+    const folded = E.plans().filter(p => p.isFolded).map(p => p.id).join(',')
+    // an agent started on a folded bar keeps it folded
+    await E.spawn('a3', 'Third')
+    const still = E.bar('t').isFolded === true
+    const b = await E.command('progress-agents')
+    const shown = E.plans().every(p => !p.isFolded)
+    const ok = /No agent strips/.test(none.text) && /folded/.test(a.text) && folded === 'u,t' && still && /shown/.test(b.text) && shown
+    return [`${none.text} | ${a.text} [${folded}] | still folded ${still} | ${b.text}`, ok]
+  },
+  async fold_lasts_through_bar_updates(E) {
+    // Claude moves a bar after every step: the fold must not come undone with it
+    await E.turnStart()
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    await E.command('progress-agents')
+    for (const op of [{ next: true }, { done: ['B'] }, { note: 'checking' }, { stages: three() }]) await E.call({ id: 't', ...op })
+    const nodes = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
+    const strips = nodes.filter(n => String(n.props?.key ?? '').startsWith('strip-t-')).length
+    return [`folded ${E.bar('t').isFolded}, strips ${strips}`, E.bar('t').isFolded === true && strips === 0]
+  },
+  async fold_keeps_the_rows_lined_up(E) {
+    // every row keeps the fold cell, and the tracks give it its room, on the desktop and in the fullscreen terminal
+    await E.turnStart()
+    await create(E, 'u', three(), 'Docs')
+    const plainDesktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
+    const plainTrack = plainDesktop.find(n => n.type === 'Svg' && /^Docs:/.test(n.props.alt)).props.width
+    const plainColumns = (await E.terminal(120, true)).find(n => n.props?.key === 'track-u').props.columns
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    const desktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
+    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 2).length
+    const track = desktop.find(n => n.type === 'Svg' && /^Docs:/.test(n.props.alt)).props.width
+    const terminal = await E.terminal(120, true)
+    const columns = terminal.find(n => n.props?.key === 'track-u').props.columns
+    const ok = cells === 2 && track === plainTrack - 24 && columns === plainColumns - 2
+    return [`desktop cells ${cells}, track ${plainTrack} → ${track}; terminal track ${plainColumns} → ${columns}`, ok]
+  },
+  async folded_bar_on_the_desktop_counts_its_agents(E) {
+    // folded, the strips are gone, so the pill says how many agents are at work
+    await E.turnStart()
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    await E.spawn('ag2', 'Read cart store')
+    await E.command('progress-agents')
+    const track = (await E.svgs()).find(s => /^Task:/.test(s.alt)).source
+    return [`pill says running ${/2 running/.test(track)}`, /2 running/.test(track)]
+  },
+  async fold_comes_back_after_a_restart(E) {
+    // a restored bar keeps the choice but shows no button while it has no strips; its next agents arrive folded
+    const kept = new Map()
+    const A = await boot(file, kept)
+    await A.turnStart()
+    await create(A)
+    await A.spawn('ag1', 'Scan routes')
+    await A.command('progress-agents')
+    A.tick(1000)
+    await A.everyTick()
+    const B = await boot(file, kept)
+    const before = (await B.terminal(120, true)).some(n => n.props?.key === 'fold-t')
+    await B.turnStart()
+    await B.spawn('ag2', 'Next batch')
+    const after = await B.terminal(120, true)
+    const button = after.find(n => n.props?.key === 'fold-t')?.props.label
+    const strips = after.some(n => n.props?.key === 'strips-t')
+    const ok = B.bar('t')?.isFolded === true && !before && button === '▸' && !strips
+    return [`restored folded ${B.bar('t')?.isFolded}, button before agents ${before}, then ${button}, strips ${strips}`, ok]
   },
   async restore_drops_the_agents_bar(E) {
     const kept = new Map()

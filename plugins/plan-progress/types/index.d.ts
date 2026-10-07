@@ -30,6 +30,8 @@ export type Plan = {
   agents?: AgentRun[]
   // when the current batch of agents all finished; their strips fold a few seconds later
   agentsDoneAt?: number | null
+  // the person folded the bar's agent strips away (its ▾ button, /progress-agents); the bar keeps one line
+  isFolded?: boolean
 }
 
 declare module 'claude-code' {
