@@ -23,6 +23,8 @@ Claude Code 입력창 위에 실시간 진행 막대를 표시합니다. Claude�
 
 ### 설치
 
+Claude Code 2.1.286 이상이 필요합니다(`claude --version`으로 확인, `claude update`로 업데이트). 이전 버전에서는 훅 모듈이 로드되지 않아 바가 표시되지 않으며, 시작 시 `plan-progress: hooks module did not load`가 표시됩니다.
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods

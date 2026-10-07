@@ -23,6 +23,8 @@
 
 ### Установка
 
+Нужен Claude Code 2.1.286 или новее (`claude --version`; обновить: `claude update`). На более старых версиях модуль хуков не загружается и полос нет; при запуске видна строка `plan-progress: hooks module did not load`.
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods

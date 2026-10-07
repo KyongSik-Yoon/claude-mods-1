@@ -692,6 +692,317 @@ const C = {
     const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(title)
     return [`length ${title.length}, lone surrogate ${lone}`, !lone]
   },
+  async wide_title_keeps_its_columns(E) {
+    // the title is plain Text, where CJK and an emoji with its variation selector take two columns each: the box
+    // must leave room for them (the widths Bun.stringWidth gives, as the engine measures Text)
+    const widths = []
+    const titles = [
+      ['設定の確認', 10],
+      ['⚠️ Fix login', 12],
+      ['1️⃣ Setup', 8],
+      ['👨‍💻 Dev setup', 12],
+      ['🇷🇺 Russia', 9],
+      ['éclair', 6],
+      ['हिन्दी परीक्षण', 9],
+      ['ทำงานต่อ', 7],
+      ['প্রকল্প পরীক্ষা', 10],
+      ['🈐 ok', 5],
+    ]
+    for (const [title, want] of titles) {
+      const F = await boot(file)
+      await F.call({ id: 't', title, stages: three() })
+      const box = (await F.terminal(200)).find(n => n.type === 'Box' && n.props.width !== undefined)
+      widths.push([title, box?.props.width, want])
+    }
+    const wrong = widths.filter(([, got, want]) => got !== want)
+    return [wrong.length ? wrong.map(([t, g, w]) => `${t} ${g}≠${w}`).join(', ') : 'every title box as wide as its text', wrong.length === 0]
+  },
+  async raster_cells_take_only_one_column_characters(E) {
+    // the engine refuses a Raster tree holding any cell that is not one printable column, and every bar vanishes
+    await E.turnStart()
+    await E.call({ id: 't', title: 'Task', stages: [S('✅ Tests', st('A', 'active'), 'B'), S('⚠️ Risks', 'C'), S('Re\u00adview e\u0301clair ส่งงาน', 'D')] })
+    await E.spawn('ag1', 'Проверка ✅ тестов\u200b ' + 'x'.repeat(50) + '😀😀')
+    const BAD = new Set([0x2705, 0xfe0f, 0xad, 0x301, 0xe48, 0x200b])
+    const bad = []
+    // the pill names only the stage at work, so each stage is made the active one in turn
+    for (const move of [null, { done: ['A', 'B'] }, { done: ['C'] }]) {
+      if (move) await E.call({ id: 't', ...move })
+      for (const r of (await E.terminal(120)).filter(n => n.type === 'Raster')) {
+        const w = new Uint32Array(Uint8Array.from(Buffer.from(r.props.cells, 'base64')).buffer)
+        for (let i = 0; i < w.length; i += 3) {
+          const cp = w[i]
+          if (cp > 0xffff || cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || (cp >= 0xd800 && cp <= 0xdfff) || BAD.has(cp)) bad.push(cp.toString(16))
+        }
+      }
+    }
+    return [bad.length ? `refused cells ${[...new Set(bad)].join(',')}` : 'every cell one column', bad.length === 0]
+  },
+  async letters_of_a_cluster_stay_in_the_pill(E) {
+    // a cluster of letters keeps every letter that fills a cell (Thai SARA AM, a Hindi conjunct's consonants)
+    const shown = []
+    for (const [name, want] of [['ทำงาน', 'ทำงาน'], ['प्रगति', 'परगत']]) {
+      const F = await boot(file)
+      await F.call({ id: 't', title: 'Task', stages: [S(name, st('A', 'active'), 'B')] })
+      const r = (await F.terminal(200)).find(n => n.type === 'Raster')
+      const pill = glyphs(r.props.cells).replace(/[⠀-⣿│]/g, ' ').trim()
+      shown.push([name, pill, pill.startsWith(want)])
+    }
+    return [shown.map(([n, p]) => `${n} → ${p.split(' ')[0]}`).join(', '), shown.every(x => x[2])]
+  },
+  async still_bars_redraw_the_same(E) {
+    // a redraw (the end of a turn is one) must not rewrite a bar that stands still: done, or open after the turn
+    await E.turnStart()
+    await E.call({ id: 'a', title: 'API review', stages: [S('One', st('A', 'done'), st('B', 'done'))] })
+    await E.call({ id: 'c', title: 'Docs', stages: three() })
+    await E.turnComplete()
+    const cells = async () => Object.fromEntries((await E.terminal(120)).filter(n => n.type === 'Raster').map(n => [n.props.key, n.props.cells]))
+    const a = await cells()
+    E.tick(700)
+    const b = await cells()
+    const changed = Object.keys(a).filter(k => a[k] !== b[k])
+    return [changed.length ? `rewritten ${changed.join(', ')}` : 'no cell rewritten', changed.length === 0]
+  },
+  async bar_keeps_its_last_frame_once_it_stops(E) {
+    // a running bar twinkled through the turn; once the turn ends, the redraw shows its last frame, unchanged later
+    await E.turnStart()
+    await E.call({ id: 't', title: 'Task', stages: [S('One', st('A', 'done'), st('B', 'done'), st('C', 'active'), 'D')] })
+    await E.terminal(120)
+    for (let i = 0; i < 12; i++) {
+      E.tick(33)
+      await E.frameTick()
+    }
+    const last = E.blits.filter(b => b.key === 'track-t').at(-1)?.cells
+    E.tick(20)
+    await E.turnComplete()
+    const cells = async () => (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t').props.cells
+    const atEnd = await cells()
+    E.tick(1500)
+    const later = await cells()
+    return [`turn-end redraw = last frame ${atEnd === last}, 1.5 s later the same ${later === atEnd}`, !!last && atEnd === last && later === atEnd]
+  },
+  async glide_lands_when_the_turn_ends(E) {
+    // the last step finished just before the turn ended: its glide lands at the end of the turn instead of sending
+    // frames through the engine's end-of-turn redraw
+    await E.turnStart()
+    await create(E)
+    await E.terminal(120)
+    await E.call({ id: 't', done: ['A', 'B', 'C'] })
+    await E.terminal(120)
+    E.tick(100)
+    await E.turnComplete()
+    await E.terminal(120)
+    await E.everyTick()
+    return [`state ${E.bar('t').state}, frame clock ${E.frameTimers()}`, E.bar('t').state === 'done' && E.frameTimers() === 0]
+  },
+  async redraw_starts_frames_for_its_glide(E) {
+    // a bar standing still (in error) is finished: the redraw starts the glide, and the frames must carry it
+    await E.turnStart()
+    await E.call({ id: 't', title: 'Task', stages: [S('Build', st('A', 'active'), 'B', 'C', 'D')] })
+    await E.call({ id: 't', failed: 'A', note: 'tests failed' })
+    await E.terminal(120)
+    E.tick(1000)
+    await E.everyTick()
+    await E.call({ id: 't', done: ['A', 'B', 'C', 'D'] })
+    await E.terminal(120)
+    const from = E.blits.length
+    for (let i = 0; i < 20; i++) {
+      E.tick(33)
+      await E.frameTick()
+    }
+    const last = E.blits.slice(from).filter(b => b.key === 'track-t').at(-1)
+    const filled = last ? [...glyphs(last.cells)].filter(c => c >= '\u2800' && c <= '\u28ff').length : 0
+    return [`${E.blits.length - from} blits, last frame ${filled} braille cells`, filled > 60]
+  },
+  async refused_blits_stop_the_frames(E) {
+    await E.turnStart()
+    await create(E)
+    await E.terminal(120)
+    const before = E.frameTimers()
+    globalThis.BLIT_DENY = 'no Raster of its own is mounted'
+    let once
+    try {
+      // one refused frame is let pass (sent between a redraw and its commit); six in a row stop the frames
+      E.tick(33)
+      await E.frameTick()
+      once = E.frameTimers()
+      for (let i = 0; i < 5; i++) {
+        E.tick(33)
+        await E.frameTick()
+      }
+    } finally {
+      delete globalThis.BLIT_DENY
+    }
+    const after = E.frameTimers()
+    await E.terminal(120)
+    const again = E.frameTimers()
+    const sized = E.blits.every(b => b.columns > 0 && b.rows > 0)
+    return [`frames ${before} → one deny → ${once} → six → ${after} → redraw → ${again}, sizes named ${sized}`, before === 1 && once === 1 && after === 0 && again === 1 && sized]
+  },
+  async refused_frames_try_again_without_a_redraw(E) {
+    // the band folded away and shown again comes back without a redraw: the frames must not stay stopped for good
+    await E.turnStart()
+    await create(E)
+    await E.terminal(120)
+    globalThis.BLIT_DENY = 'no Raster of its own is mounted'
+    let refused
+    try {
+      for (let i = 0; i < 6; i++) {
+        E.tick(33)
+        await E.frameTick()
+      }
+      refused = E.frameTimers()
+      E.tick(1000)
+      await E.everyTick()
+    } finally {
+      delete globalThis.BLIT_DENY
+    }
+    E.tick(1000)
+    await E.everyTick()
+    const from = E.blits.length
+    for (let i = 0; i < 5; i++) {
+      E.tick(33)
+      await E.frameTick()
+    }
+    const sent = E.blits.length - from
+    return [`frames after deny ${refused}, then ${sent} blits with no redraw`, refused === 0 && sent >= 3]
+  },
+  async move_after_the_turn_lands_at_once(E) {
+    // a bar moved after the turn ended (no agents at work) is drawn in place: no glide, no frames
+    await E.turnStart()
+    await create(E)
+    await E.terminal(120)
+    await E.turnComplete()
+    await E.terminal(120)
+    await E.everyTick()
+    await E.call({ id: 't', done: ['A', 'B'] })
+    await E.terminal(120)
+    await E.everyTick()
+    return [`frame clock ${E.frameTimers()}`, E.frameTimers() === 0]
+  },
+  async stale_frame_after_a_redraw_is_dropped(E) {
+    // a frame that read the clock before a redraw laid the band out at another width sends nothing
+    await E.turnStart()
+    await create(E)
+    await E.terminal(120)
+    // the frames run (0.7.6 started them only on the 1 s tick), and the frame that tick sent has finished
+    await E.everyTick()
+    await new Promise(r => setTimeout(r, 0))
+    const now = E.$.clock.now
+    let release
+    let isHeld = true
+    E.$.clock.now = async () => {
+      const t = await now()
+      if (isHeld) {
+        isHeld = false
+        await new Promise(r => (release = r))
+      }
+      return t
+    }
+    E.tick(33)
+    await E.frameTick()
+    // only the frame's clock read is held; the redraw below must not wait on it
+    const isFrameHeld = !isHeld
+    isHeld = false
+    const width = (await E.terminal(80)).find(n => n.type === 'Raster').props.columns
+    const from = E.blits.length
+    release?.()
+    await new Promise(r => setTimeout(r, 10))
+    E.$.clock.now = now
+    const stale = E.blits.slice(from).filter(b => b.columns !== width).length
+    return [`frame held over the redraw ${isFrameHeld}, stale blits ${stale}`, isFrameHeld && stale === 0]
+  },
+  async agent_title_cut_keeps_whole_characters(E) {
+    await E.spawn('ag1', 'x'.repeat(59) + '😀 and more')
+    const t = E.bar('agents:auto').agents[0].title
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(t)
+    return [`title length ${t.length}, lone surrogate ${lone}`, !lone]
+  },
+  async child_sits_under_its_parent_only_where_the_parent_is(E) {
+    // the parent's Agents bar was pushed out; its children land on a new Agents bar side by side, not one under another
+    await E.turnStart()
+    await E.spawn('P', 'Parent agent')
+    for (const id of ['a', 'b', 'c']) await create(E, id, three(), id)
+    await E.spawn('C1', 'First child', 'P')
+    await E.spawn('C2', 'Second child', 'P')
+    const depths = (E.bar('agents:auto')?.agents ?? []).map(a => `${a.id}:${a.depth}`).join(' ')
+    return [depths || 'no agents bar', depths === 'C1:0 C2:0']
+  },
+  async restore_drops_the_agents_bar(E) {
+    const kept = new Map()
+    const A = await boot(file, kept)
+    await A.turnStart()
+    await A.spawn('ag1', 'Scan routes')
+    await A.spawn('ag2', 'Read cart store')
+    await A.turnComplete()
+    A.tick(1000)
+    await A.everyTick()
+    const B = await boot(file, kept)
+    const ids = B.plans().map(p => p.id).join(',')
+    return [`restored: ${ids || 'nothing'}`, !ids.includes('agents:auto')]
+  },
+  async reload_keeps_following_running_agents(E) {
+    await E.turnStart()
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    await E.reload()
+    await E.agentTool('ag1', 'Read')
+    await E.turnComplete('ag1')
+    await E.turnComplete()
+    E.tick(1000)
+    await E.everyTick()
+    const a = E.bar('t').agents[0]
+    return [`agent ${a.state} ${a.tool}`, a.state === 'done']
+  },
+  async agent_heard_before_the_reload_rebuilt_its_map(E) {
+    // the reloaded module's hooks are live before its session.start runs: a call and the finish that come first still
+    // find the agent by its strip
+    await E.turnStart()
+    await create(E)
+    await E.spawn('ag1', 'Scan routes')
+    const start = E.sessionStart
+    E.sessionStart = async () => {
+      await E.agentTool('ag1', 'Read')
+      await E.turnComplete('ag1')
+      return E.raw('session.start', {})
+    }
+    try {
+      await E.reload()
+    } finally {
+      E.sessionStart = start
+    }
+    const a = E.bar('t').agents[0]
+    return [`agent ${a.state} ${a.tool}`, a.state === 'done']
+  },
+  async spawn_after_its_bar_closed_finds_the_agents_bar(E) {
+    await E.turnStart()
+    await create(E)
+    await E.spawn('P', 'Parent agent')
+    const tree = await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 120, hasSurvey: false } })
+    let press
+    const walk = n => {
+      if (Array.isArray(n)) return n.forEach(walk)
+      if (!n || typeof n !== 'object') return
+      if (n.props?.key === 'close-t') press = n.props.onPress
+      ;(n.children ?? []).forEach(walk)
+    }
+    walk(tree)
+    await press()
+    await E.spawn('C', 'Child agent', 'P')
+    await E.turnComplete('C')
+    E.tick(1000)
+    await E.everyTick()
+    const c = E.bar('agents:auto')?.agents.find(a => a.id === 'C')
+    return [`child on ${c ? 'agents bar' : 'nothing'}: ${c?.state}, depth ${c?.depth}`, c?.state === 'done' && c.depth === 0]
+  },
+  async windows_sound_path_goes_through_env(E) {
+    E.$.plugin.root = "C:/Users/O'Brien/.claude/plugins/cache/zycck-mods/plan-progress/0.7.7"
+    await E.ask()
+    await new Promise(r => setTimeout(r, 10))
+    const at = E.procs.findIndex(p => p.startsWith('powershell'))
+    const wav = E.procEnvs[at]?.PLAN_PROGRESS_WAV ?? ''
+    const ok = at >= 0 && !E.procs[at].includes("O'Brien") && wav.includes("O'Brien") && wav.endsWith('decision.wav')
+    return [`command quotes the path ${E.procs[at]?.includes("O'Brien")}, env ${wav.slice(-40)}`, ok]
+  },
 }
 
 let failed = 0

@@ -23,6 +23,8 @@ Des barres de progression en direct au-dessus du champ de saisie de Claude Code.
 
 ### Installation
 
+Nécessite Claude Code 2.1.286 ou plus récent (`claude --version` ; mise à jour avec `claude update`). Sur les versions antérieures, le module de hooks ne se charge pas et aucune barre n'apparaît ; au démarrage s'affiche `plan-progress: hooks module did not load`.
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods

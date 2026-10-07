@@ -659,9 +659,58 @@ let isLight = false
 const termBg = () => (isLight ? [255, 255, 255] : [24, 24, 27])
 const termFg = () => (isLight ? [34, 34, 38] : [240, 238, 252])
 const pack = (c: number[]) => ((c[0] ?? 0) << 16) | ((c[1] ?? 0) << 8) | (c[2] ?? 0)
-const isWide = (cp: number) => cp > 0xffff || (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6)
-const cellText = (s: string) => [...s].map(ch => (isWide(ch.codePointAt(0) ?? 63) || (ch.codePointAt(0) ?? 0) < 32 ? '·' : ch)).join('')
-const cellsOf = (s: string) => [...s].reduce((w, ch) => w + (isWide(ch.codePointAt(0) ?? 0) ? 2 : 1), 0)
+// a Raster cell takes one printable BMP character exactly one column wide, as the engine measures it
+// (Bun.stringWidth, ambiguous narrow); any other character refuses the whole tree and every bar vanishes.
+// NOT_ONE lists the printable BMP characters whose width is not one, as base-36 "start-extra" ranges
+const NOT_ONE = '4t,lc-33,w3-6,13l-18,14v,14x-1,150-1,153,16o-5,174-a,17g,18r-k,19s,1cm-7,1cv-5,1d3-1,1d6-3,1e7,1e9,1f4-q,1ie-a,1kb-8,1kt,1li-3,1ln-8,1lx-2,1m1-4,1nd-2,1p3-8,1qi-1k,1tm-2,1tq-f,1u9-6,1uq-1,1vk-2,1x6-2,1xa-f,1xt-6,1ya-1,1z2,1z4-2,20q-2,20u-f,21d-6,21u-1,228-1,22d,22o-2,24a-2,24e-f,24x-6,25e-1,262-8,27u-2,27y-f,28h-6,28y-1,29s-2,2be-2,2bi-f,2c1-6,2ci-1,2dc-2,2dg,2ey-2,2f2-f,2fl-6,2g2-1,2gw-2,2ii-2,2im-f,2j5-6,2jm-1,2kg-2,2m2-2,2m6-f,2n6-1,2o1,2q2,2qa-2,2qe,2sx,2t0-6,2tj-7,2wh,2wk-8,2x4-6,2zc-1,305,307,309,31t-d,328-4,32e-1,32l-a,32x-z,346,371-3,376-5,37d-1,37h-1,388-1,38e-2,38x-3,39e,39h-1,39p,3a5,3cw-73,3tp-2,4k2-2,4ky-1,4lu-1,4mq-1,4ok-1,4on-6,4p2,4p5-a,4pp,4qz-4,4ud-1,4vd,4yo-2,4yv-1,4z6,4zd-2,55j-1,55n,57a,57c-6,57k,57m,57p-7,583-9,58f,59s-2b,5dg,5di-4,5do,5du,5ez-8,5fk-1,5gi-3,5go-1,5gr-2,5ie,5ig-1,5il,5in-2,5kc-7,5km-1,5ow-2,5p0-c,5pe-6,5pp,5pw,5q0-1,5vk-1r,6bv-4,6cq-4,6e8-f,6hc-1b,6xm-1,6y1-1,73d-3,73k,73n,7i5-1,7is-1,7jk-7,7k8-b,7lr,7m2-5,7mb,7mp,7my-1,7nh-1,7no-1,7ny,7o4,7oq,7oy-1,7p1,7p6,7p9,7ph,7pm-1,7qg,7rg,7ri,7rn-2,7rr,7th-2,7u8,7un,8ij-1,8k0,8k5,8vj-2,8zj,928-v,96o-p,97f-2g,9a8-5x,9gw-26,9j5-2d,9ll-2u,9ol-16,9pt-2l,9sg-2d,9v3-1b,9wg-13,9xs-mkc,wi8-1i,wvj-3,wvo-9,wwu-1,wz4-1,x6q,x6u,x6z,x7p-1,x7w,xc4-1,xcw-h,xdr,xeu-7,xfr-a,xgg-s,xhc-2,xir,xiu-3,xj0-1,xk5,xm1-5,xm9-1,xmd-1,xmr,xn0,xoc,xps,xpu-2,xpz-1,xq6-1,xq9,xrg-1,xrq,xyd,xyg,xyl,xz4-8mb,16ls-27,1d6o-e7,1dlq,1e68-p,1e74-1e,1e8k-i,1e94-3,1edb,1edd-2n,1ejk-6'
+const notOne = NOT_ONE.split(',').map(r => {
+  const [a = '0', n] = r.split('-')
+  const from = parseInt(a, 36)
+  return [from, from + (n ? parseInt(n, 36) : 0)] as const
+})
+function isNotOne(cp: number) {
+  let lo = 0
+  let hi = notOne.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const [from, to] = notOne[mid] ?? [0, 0]
+    if (cp < from) hi = mid - 1
+    else if (cp > to) lo = mid + 1
+    else return true
+  }
+  return false
+}
+// marks and format characters (accents written apart, variation selectors, joiners, soft hyphens) take no cell
+// of their own and go; anything else that cannot fill exactly one cell is drawn as a middle dot
+const cellChar = (ch: string) => {
+  if (/\p{M}|\p{Cf}/u.test(ch)) return ''
+  const cp = ch.codePointAt(0) ?? 63
+  const isControl = cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)
+  return isControl || cp > 0xffff || (cp >= 0xd800 && cp <= 0xdfff) || isNotOne(cp) ? '·' : ch
+}
+// an emoji sequence (a variation selector, a keycap, joined people, a skin tone, a flag) is one picture two columns
+// wide, so it is found a grapheme cluster at a time; everything else is measured a character at a time, as the
+// engine measures it, since a cluster of letters (a Hindi conjunct, Thai SARA AM) is several columns
+const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
+const clusters = (s: string): string[] => (segmenter ? Array.from(segmenter.segment(s), x => x.segment) : [...s])
+const isEmojiCluster = (c: string) =>
+  /⃣|\p{Regional_Indicator}/u.test(c) ||
+  (/\p{Extended_Pictographic}/u.test(c) && (/[️‍\u{1F3FB}-\u{1F3FF}]/u.test(c) || (c.codePointAt(0) ?? 0) > 0xffff))
+// the cells a string takes inside a Raster: a dot for an emoji sequence, each other character as cellChar draws it
+const cellText = (s: string) => clusters(s).map(c => (isEmojiCluster(c) ? '·' : [...c].map(cellChar).join(''))).join('')
+const cellsOf = (s: string) => [...cellText(s)].length
+// the columns one character takes as plain Text: none for marks, format and control characters and the vowel and
+// final jamo of a Hangul syllable written apart; two for wide ones, and for any character beyond the basic plane
+// but mathematical letters (a guess too wide only pads the title box, one too narrow cuts the title)
+function charColumns(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0
+  if (/\p{M}|\p{Cf}/u.test(ch) || cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return 0
+  if ((cp >= 0x1160 && cp <= 0x11ff) || (cp >= 0xd7b0 && cp <= 0xd7ff)) return 0
+  if (cp > 0xffff) return cp >= 0x1d400 && cp <= 0x1d7ff ? 1 : 2
+  return isNotOne(cp) ? 2 : 1
+}
+// the columns a string takes as plain Text, where the terminal draws a wide character (CJK, emoji) over two
+const columnsOf = (s: string) => clusters(s).reduce((w, c) => w + (isEmojiCluster(c) ? 2 : [...c].reduce((n, ch) => n + charColumns(ch), 0)), 0)
 const fit = (s: string, w: number) => {
   const chars = [...cellText(s)]
   if (chars.length <= w) return chars.join('')
@@ -718,10 +767,13 @@ const easeOut = (x: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, x)), 4)
 
 const glide = new Map<string, { from: number; to: number; at: number }>()
 const GLIDE_MS = 450
+// the twinkle moment of each bar's last moving frame, kept while it stands still
+const stillPhase = new Map<string, number>()
 
-function headAt(id: string, target: number, t: number): number {
+// a head glides to a new place only while frames can carry the glide; otherwise it is drawn there at once
+function headAt(id: string, target: number, t: number, canGlide: boolean): number {
   const g = glide.get(id)
-  if (!g) {
+  if (!g || (!canGlide && Math.abs(g.to - target) > 0.01)) {
     glide.set(id, { from: target, to: target, at: t })
     return target
   }
@@ -739,7 +791,12 @@ function trackCells(p: Plan, W: number, t: number): string {
   const w = where(p)
   const done = p.state === 'done'
   const target = (done ? 1 : Math.min(1, w.pos / Math.max(1, w.total))) * W
-  const fx = headAt(p.id, target, t)
+  // after the turn a change lands at once: a glide would keep frames going through the engine's end-of-turn redraw
+  const fx = headAt(p.id, target, t, isTurnLive || hasRunningAgents(p))
+  // only a moving bar twinkles with the clock; one that stands still keeps the twinkle of its last frame, so a
+  // redraw (the end of a turn is one) rewrites none of its cells, even right after it stopped moving
+  const phase = isAnimated(p, t) ? t : (stillPhase.get(p.id) ?? 0)
+  stillPhase.set(p.id, phase)
   const back = termBg()
   const acc = hex(STATE_COLOR[p.state])
   const light = mix(acc, [255, 255, 255], 0.35)
@@ -766,7 +823,7 @@ function trackCells(p: Plan, W: number, t: number): string {
     if (bits === 0) continue
     const cls = Math.floor(hash(col, 0, 2) * 4)
     const period = TWINKLE[cls] ?? 2200
-    const blink = 1 - dim * wave(t + (DELAY[cls] ?? 0), period, 0.25)
+    const blink = 1 - dim * wave(phase + (DELAY[cls] ?? 0), period, 0.25)
     const bucket = done ? 1 : q(Math.min(1, Math.pow(u, 0.9) * 1.1))
     const tone = mix(grey, light, bucket)
     const opacity = (0.35 + 0.65 * dense) * blink
@@ -882,6 +939,11 @@ let isFrameBusy = false
 // a bar twinkles only while Claude works on it; one waiting on the person or left open after the turn stands still
 let isTurnLive = false
 let frames: { cancel: () => void } | null = null
+// when the engine last refused frames of this band for good; the frames rest a second before they try again
+let refusedAt: number | null = null
+// refused frames in a row: one sent between a redraw and its commit is refused once and the next goes through
+let refusedInRow = 0
+const REFUSED_MAX = 6
 
 const hasRunningAgents = (p: Plan) => (p.agents ?? []).some(a => a.state === 'running' || a.state === 'waiting')
 const isGliding = (p: Plan, t: number) => {
@@ -892,7 +954,8 @@ const isAnimated = (p: Plan, t: number) => (isTurnLive && p.state === 'running')
 
 // the 30 fps clock runs only while a terminal band has something moving; the second timer starts and stops it
 function syncFrames($: EngineInterface, now: number) {
-  const isWanted = band !== null && band.list.some(p => isAnimated(p, now))
+  const isRested = refusedAt === null || now - refusedAt >= 1000
+  const isWanted = band !== null && isRested && band.list.some(p => isAnimated(p, now))
   if (isWanted && !frames) frames = $.clock.every(33, () => void animate($))
   if (!isWanted && frames) {
     frames.cancel()
@@ -948,27 +1011,45 @@ async function syncTint($: EngineInterface, now: number) {
   if (b) await blitPlans($, b, b.list, now)
 }
 
+// the size goes along, so a band redrawn at another width answers with a deny naming both sizes
 function blitPlans($: EngineInterface, b: Band, list: readonly Plan[], now: number) {
   return Promise.all(
     list.flatMap(p => {
       const v = visibleAgents(p, now, stripBudget(b.list.length))
       const strips = v ? stripCells(v, b.W, now) : null
-      const calls = [$.ui.blit({ requestId: b.requestId, key: `track-${p.id}`, cells: trackCells(p, b.W, now) })]
-      if (strips) calls.push($.ui.blit({ requestId: b.requestId, key: `strips-${p.id}`, cells: strips.cells }))
+      const calls = [$.ui.blit({ requestId: b.requestId, key: `track-${p.id}`, cells: trackCells(p, b.W, now), columns: b.W, rows: 1 })]
+      if (strips) calls.push($.ui.blit({ requestId: b.requestId, key: `strips-${p.id}`, cells: strips.cells, columns: b.W, rows: strips.rows }))
       return calls.map(c => c.catch(() => undefined))
     }),
   )
 }
 
+// blits the engine keeps refusing (the band hidden or unmounted, redrawn at another size, or its tree refused) stop
+// the frames: the 1 s timer tries one frame again a second later, and a redraw lays the band out anew at once. A
+// band shown again without a redraw (folded and unfolded) so comes back within a second instead of staying still
+function stopFrames(b: Band, now: number) {
+  if (band !== b) return
+  refusedAt = now
+  refusedInRow = 0
+  frames?.cancel()
+  frames = null
+}
+
 async function animate($: EngineInterface) {
   const b = band
   if (!b || isFrameBusy) return
-  const now = await $.clock.now()
-  const live = b.list.filter(p => isAnimated(p, now))
-  if (live.length === 0) return
   isFrameBusy = true
   try {
-    await blitPlans($, b, live, now)
+    const now = await $.clock.now()
+    // a redraw while the clock was read laid the band out anew: this frame belongs to the old one
+    if (band !== b) return
+    const live = b.list.filter(p => isAnimated(p, now))
+    if (live.length === 0) return
+    const answers = await blitPlans($, b, live, now)
+    if (!answers.some(a => a?.deny)) {
+      refusedInRow = 0
+      refusedAt = null
+    } else if (++refusedInRow >= REFUSED_MAX) stopFrames(b, now)
   } finally {
     isFrameBusy = false
   }
@@ -984,9 +1065,13 @@ let soundLog: { at: number; name: string }[] | null = null
 function play($: EngineInterface, name: 'decision' | 'error' | 'done') {
   if (soundLog) void $.clock.now().then(at => soundLog?.push({ at, name }))
   const file = `${$.plugin.root}/sounds/${name}.wav`.replace(/\//g, '\\')
+  // the path goes in through the environment: written into the command, a quote in it (C:\Users\O'Brien) ends the string
   const viaPowerShell = () =>
     $.process
-      .run(['powershell', '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `(New-Object Media.SoundPlayer '${file}').PlaySync()`], { timeoutMs: 5000 })
+      .run(['powershell', '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '(New-Object Media.SoundPlayer $env:PLAN_PROGRESS_WAV).PlaySync()'], {
+        env: { PLAN_PROGRESS_WAV: file },
+        timeoutMs: 5000,
+      })
       .catch(() => undefined)
   // on Windows the engine's player can report success and stay silent, so the system player plays it directly
   if (/^[A-Za-z]:/.test($.plugin.root)) {
@@ -1055,7 +1140,7 @@ async function editPlan($: EngineInterface, id: string, make: (prev: Plan | null
 // ---------- agents: drawn from engine events alone, no model calls ----------
 // each subagent lives on a bar as one state strip: the open task bar it was started under,
 // the bar of its parent agent, or the mod's own "Agents" bar when no task is open.
-// Module maps: a reload forgets running agents, whose strips then stay until the bar is closed.
+// Module maps: a reload starts them empty; session.start finds the agents still at work again from the bars.
 const agentHome = new Map<string, string>() // agentId -> bar id
 // an agent's calls in flight, tool_use_id first: the tool, and whether a permission dialog for it is in front of the person.
 // Kept per call, since one agent may run several calls at once and only some of them ask.
@@ -1111,6 +1196,16 @@ function forgetFlights(agentId: string) {
 }
 
 // changes one agent's strip inside the latest list; silent, since a subagent answers to Claude, not to the person
+// an agent the map does not know (the mod reloaded while it ran, and its call came before session.start rebuilt
+// the map) is found again by its strip still running on a bar
+async function knowAgent($: EngineInterface, agentId: string): Promise<boolean> {
+  if (agentHome.has(agentId)) return true
+  const bar = (await read($, plans)).find(p => (p.agents ?? []).some(a => a.id === agentId && (a.state === 'running' || a.state === 'waiting')))
+  if (!bar) return false
+  agentHome.set(agentId, bar.id)
+  return true
+}
+
 async function editAgent($: EngineInterface, agentId: string, change: (a: AgentRun) => AgentRun) {
   const home = agentHome.get(agentId)
   if (!home) return
@@ -1135,6 +1230,7 @@ function forgetGone(list: readonly Plan[]) {
   const shown = new Set(list.flatMap(p => (p.agents ?? []).map(a => a.id)))
   for (const id of lastHead.keys()) if (!bars.has(id)) lastHead.delete(id)
   for (const id of glide.keys()) if (!bars.has(id)) glide.delete(id)
+  for (const id of stillPhase.keys()) if (!bars.has(id)) stillPhase.delete(id)
   for (const id of lastStrip.keys()) if (!shown.has(id)) lastStrip.delete(id)
   for (const [id, home] of agentHome) {
     if (bars.has(home) && live.has(id)) continue
@@ -1146,6 +1242,7 @@ function forgetGone(list: readonly Plan[]) {
 async function dropPlan($: EngineInterface, id: string) {
   lastHead.delete(id)
   glide.delete(id)
+  stillPhase.delete(id)
   for (const p of await read($, plans)) if (p.id === id) for (const a of p.agents ?? []) lastStrip.delete(a.id)
   await update($, plans, list => list.filter(p => p.id !== id))
 }
@@ -1193,11 +1290,13 @@ async function savePlans($: EngineInterface, list: Plan[]) {
   for (const old of keys.slice(0, Math.max(0, keys.length - (KEEP_SESSIONS - 1)))) await $.store.delete(old)
 }
 
-// agents do not outlive the process that ran them, so a restored bar comes back without strips
+// agents do not outlive the process that ran them, so a restored bar comes back without strips, and the mod's
+// own Agents bar, which only ever showed them, does not come back at all
 async function restorePlans($: EngineInterface) {
   const saved = await $.store.get(SAVED + (await $.session.id()))
   if (!Array.isArray(saved) || saved.length === 0) return
-  const list = (saved as Plan[]).map(p => ({ ...p, agents: [], agentsDoneAt: null }))
+  const list = (saved as Plan[]).filter(p => p.id !== AGENTS).map(p => ({ ...p, agents: [], agentsDoneAt: null }))
+  if (list.length === 0) return
   await update($, plans, () => list)
   lastSaved = list
 }
@@ -1329,7 +1428,7 @@ export const register: Register = on => {
     // a subagent's call only names its current tool on its strip; no gate, no reminders
     if (e.agentId) {
       const agentId = e.agentId
-      if (!agentHome.has(agentId)) return next(e)
+      if (!(await knowAgent($, agentId))) return next(e)
       const useId = e.tool_use_id ?? `${agentId}#${++flightCount}`
       flights.set(useId, { agentId, tool: e.tool, isAsked: false })
       await showAgent($, agentId)
@@ -1401,6 +1500,11 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    // a reload of the mod keeps the bars (they are the host's) but starts its maps empty: agents still at work
+    // find their strips again first thing, so their next calls and their finish are not lost (knowAgent covers
+    // a call that comes in even sooner)
+    const kept = await read($, plans)
+    for (const p of kept) for (const a of p.agents ?? []) if (a.state === 'running' || a.state === 'waiting') agentHome.set(a.id, p.id)
     await $.tool.register({
       name: 'plan_progress',
       description: 'Live progress bar above the prompt, one per id. Create with title + stages; update with short ops (next, done, active, failed) or state.',
@@ -1426,7 +1530,7 @@ export const register: Register = on => {
       },
     })
     // a session reopened later (an app restart, a resume) finds its bars where it left them
-    if ((await read($, plans)).length === 0) await restorePlans($)
+    if (kept.length === 0) await restorePlans($)
     const theme = (await $.config.list().catch(() => [])).find(row => row.key === 'theme')
     themeSetting = String(theme?.value ?? 'dark')
     isLight = tintIsLight()
@@ -1559,10 +1663,12 @@ export const register: Register = on => {
       const now = await $.clock.now()
       const cols = Math.max(30, e.props.bodyColumns || 100)
       const hasClicks = e.viewport?.isFullscreen === true
-      const titleW = Math.max(4, Math.min(Math.round(cols * 0.28), Math.max(...list.map(p => cellsOf(p.title)))))
+      const titleW = Math.max(4, Math.min(Math.round(cols * 0.28), Math.max(...list.map(p => columnsOf(p.title)))))
       const trackW = Math.max(12, Math.min(512, cols - titleW - (hasClicks ? 15 : 13)))
       band = { requestId: e.requestId, W: trackW, list }
-      return (
+      refusedAt = null
+      refusedInRow = 0
+      const tree = (
         <Box flexDirection="column">
           {list.map(p => {
             const v = visibleAgents(p, now, stripBudget(list.length))
@@ -1595,6 +1701,9 @@ export const register: Register = on => {
           })}
         </Box>
       )
+      // the cells above start a glide where the bar moved; the frames that carry it start with them
+      syncFrames($, now)
+      return tree
     }
     const t = $.ui.resolve(e)
     const { Box, Button, Text } = t
@@ -1680,7 +1789,7 @@ export const register: Register = on => {
     const home = parentHome ?? [...(await read($, plans))].reverse().find(isOpenPlan)?.id ?? AGENTS
     const run: AgentRun = {
       id,
-      title: (e.description || e.subagentType).slice(0, 60),
+      title: str(e.description || e.subagentType, 60),
       state: 'running',
       tool: 'Starting',
       model: started.model,
@@ -1689,14 +1798,26 @@ export const register: Register = on => {
       depth: parentHome ? 1 : 0,
     }
     let isNew = false
+    // the bar the strip really lands on: the home picked above can be gone by now (closed, cleared or pushed out)
+    let placed = home
     await update($, plans, list => {
-      if (list.some(p => p.id === home)) return list.map(p => (p.id === home ? addRun(p, run, e.parentAgentId, now) : p))
+      if (list.some(p => p.id === home)) {
+        // a child sits under its parent only where the parent's strip really is; elsewhere it starts a line of its own
+        return list.map(p => {
+          if (p.id !== home) return p
+          const isUnder = !!e.parentAgentId && (p.agents ?? []).some(a => a.id === e.parentAgentId)
+          return addRun(p, isUnder ? run : { ...run, depth: 0 }, isUnder ? e.parentAgentId : undefined, now)
+        })
+      }
+      placed = AGENTS
+      const top = { ...run, depth: 0 }
+      if (list.some(p => p.id === AGENTS)) return list.map(p => (p.id === AGENTS ? addRun(p, top, undefined, now) : p))
       isNew = true
       const auto: Plan = { id: AGENTS, title: 'Agents', kind: 'todo', stages: [], state: 'running', note: null, startedAt: now }
-      return placeBar(list, addRun(auto, run, undefined, now))
+      return placeBar(list, addRun(auto, top, undefined, now))
     })
     // known only once its strip is stored, so the cleanup in the clock never sees a home without the agent
-    agentHome.set(id, home)
+    agentHome.set(id, placed)
     if (isNew) await update($, isOpen, () => true)
 
     return started
@@ -1737,7 +1858,7 @@ export const register: Register = on => {
   // the first request of an agent's loop says what it runs on: the resolved model and its effort
   on('turn.step', async function* ($, e, next) {
     const agentId = e.agentId
-    if (agentId && agentHome.has(agentId)) {
+    if (agentId && (await knowAgent($, agentId))) {
       const effort = e.effort === undefined ? undefined : String(e.effort)
       const known = (await read($, plans)).flatMap(p => p.agents ?? []).find(a => a.id === agentId)
       if (known && (known.model !== e.model || known.effort !== effort)) await editAgent($, agentId, a => ({ ...a, model: e.model, effort }))
@@ -1748,8 +1869,12 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const agentId = e.agentId
-    if (!agentId) isTurnLive = false
-    if (agentId && agentHome.has(agentId)) {
+    if (!agentId) {
+      isTurnLive = false
+      // a glide still under way lands now: frames running on would go out with the engine's end-of-turn redraw
+      for (const [id, g] of glide) glide.set(id, { from: g.to, to: g.to, at: g.at })
+    }
+    if (agentId && (await knowAgent($, agentId))) {
       const now = await $.clock.now()
       const isFailed = e.reason !== 'answer'
       const tool = e.reason === 'aborted' ? 'Stopped' : isFailed ? 'Failed' : 'Done'

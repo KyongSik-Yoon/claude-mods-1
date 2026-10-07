@@ -23,6 +23,8 @@ Live progress bars above the Claude Code prompt. Claude splits a task into stage
 
 ### Install
 
+Requires Claude Code 2.1.286 or newer (`claude --version`; `claude update` to upgrade). On older versions the hooks module does not load and no bars appear; the startup banner says `plan-progress: hooks module did not load`.
+
 ```
 /plugin marketplace add zycck/claude-mods
 /plugin install plan-progress@zycck-mods
