@@ -35,6 +35,14 @@ async function withMachine(set, run) {
 }
 const pct = async (E, id) => (await E.view(id)).alt.match(/\d+%/)?.[0]
 // every element of a drawn tree, flat
+// WCAG 2.x contrast of two colours, and a colour laid over another at some opacity, as a browser paints them
+const toRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
+const luminance = c => {
+  const l = c.map(v => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2]
+}
+const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05)
+const over = (back, c, a) => back.map((v, i) => Math.round(v + (c[i] - v) * a))
 const walkAll = (n, out = []) => {
   if (Array.isArray(n)) n.forEach(c => walkAll(c, out))
   else if (n && typeof n === 'object') {
@@ -937,7 +945,7 @@ const C = {
     return [depths || 'no agents bar', depths === 'C1:0 C2:0']
   },
   async fold_button_folds_a_bars_agent_strips(E) {
-    // issue #11: the ▾ button before ✕ folds the strips away and keeps the bar; ▸ shows them again
+    // issue #11: the chevron before ✕ folds the strips away and keeps the bar; ▸ shows them again
     await E.turnStart()
     // agents land on the newest open bar, so the bar that gets them is made last
     await create(E, 'u', three(), 'Docs')
@@ -946,15 +954,17 @@ const C = {
     await E.spawn('ag2', 'Read cart store')
     const desktop = async () => {
       const nodes = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
-      return { fold: nodes.find(n => n.props?.key === 'fold-t'), foldU: nodes.find(n => n.props?.key === 'fold-u'), strips: nodes.filter(n => String(n.props?.key ?? '').startsWith('strip-t-')).length }
+      const chip = nodes.find(n => n.props?.key === 'foldchip-t')
+      const icon = walkAll(chip?.children ?? []).find(n => n.type === 'Svg')?.props.source ?? ''
+      return { fold: nodes.find(n => n.props?.key === 'fold-t'), arrow: icon.includes('m6 9 6 6 6-6') ? 'down' : icon.includes('m18 15-6-6-6 6') ? 'up' : 'none', foldU: nodes.find(n => n.props?.key === 'fold-u'), strips: nodes.filter(n => String(n.props?.key ?? '').startsWith('strip-t-')).length }
     }
     const a = await desktop()
     await a.fold.props.onPress()
     const b = await desktop()
     await b.fold.props.onPress()
     const c = await desktop()
-    const ok = a.strips === 2 && a.fold.props.label === '▾' && !a.foldU && b.strips === 0 && b.fold.props.label === '▸' && !!E.bar('t') && c.strips === 2
-    return [`strips ${a.strips} → fold → ${b.strips} (${b.fold?.props.label}) → unfold → ${c.strips}; bar without agents has a button ${!!a.foldU}`, ok]
+    const ok = a.strips === 2 && a.arrow === 'up' && !a.foldU && b.strips === 0 && b.arrow === 'down' && !!E.bar('t') && c.strips === 2
+    return [`strips ${a.strips} → fold → ${b.strips} (arrow ${a.arrow} → ${b.arrow}) → unfold → ${c.strips}; bar without agents has a button ${!!a.foldU}`, ok]
   },
   async folded_bar_in_the_terminal(E) {
     // fullscreen: the button and every row keeping its cell; outside fullscreen no button; folded: no strips and no
@@ -1020,11 +1030,11 @@ const C = {
     await create(E)
     await E.spawn('ag1', 'Scan routes')
     const desktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
-    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 2).length
+    const cells = desktop.filter(n => n.type === 'Box' && n.props.width === 5 && !n.props.key).length
     const track = desktop.find(n => n.type === 'Svg' && /^Docs:/.test(n.props.alt)).props.width
     const terminal = await E.terminal(120, true)
     const columns = terminal.find(n => n.props?.key === 'track-u').props.columns
-    const ok = cells === 2 && track === plainTrack - 24 && columns === plainColumns - 2
+    const ok = cells === 2 && track === plainTrack - 40 && columns === plainColumns - 2
     return [`desktop cells ${cells}, track ${plainTrack} → ${track}; terminal track ${plainColumns} → ${columns}`, ok]
   },
   async folded_bar_on_the_desktop_counts_its_agents(E) {
@@ -1132,6 +1142,155 @@ const C = {
     const wav = E.procEnvs[at]?.PLAN_PROGRESS_WAV ?? ''
     const ok = at >= 0 && !E.procs[at].includes("O'Brien") && wav.includes("O'Brien") && wav.endsWith('decision.wav')
     return [`command quotes the path ${E.procs[at]?.includes("O'Brien")}, env ${wav.slice(-40)}`, ok]
+  },
+  async desktop_strip_text_reads_in_light_and_dark(E) {
+    // issue #13: on the desktop a strip is a picture over a background the plugin is never told; every word on it
+    // reads at WCAG AA in either scheme its media query picks, over the strip's own backing
+    await create(E)
+    for (const [id, title] of [['g1', 'Run the tests'], ['g2', 'Ask first'], ['g3', 'Break'], ['g4', 'Old one'], ['g5', 'Old two'], ['g6', 'Old three'], ['g7', 'Last one']]) await E.spawn(id, title)
+    await E.step('g1', 'high')
+    await E.agentTool('g1', 'Bash')
+    await E.hold('g2')
+    await E.turnComplete('g3', 'error')
+    for (const id of ['g4', 'g5', 'g6', 'g7']) await E.turnComplete(id)
+    const v = await E.view('t')
+    const sheet = v.strips[0]?.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? ''
+    // the sheet as a browser applies it in each scheme: the rules outside any @media, then those under the scheme's query
+    const blocks = []
+    let flat = ''
+    for (let i = 0; i < sheet.length; ) {
+      const at = sheet.indexOf('@media', i)
+      if (at < 0) {
+        flat += sheet.slice(i)
+        break
+      }
+      flat += sheet.slice(i, at)
+      const open = sheet.indexOf('{', at)
+      let depth = 1
+      let end = open + 1
+      for (; end < sheet.length && depth > 0; end++) depth += sheet[end] === '{' ? 1 : sheet[end] === '}' ? -1 : 0
+      blocks.push({ query: sheet.slice(at + 6, open).trim(), body: sheet.slice(open + 1, end - 1) })
+      i = end
+    }
+    const rules = css => Object.fromEntries([...css.matchAll(/\.([\w-]+)\{(?:fill|color):(#[0-9A-Fa-f]{6})\}/g)].map(m => [m[1], toRgb(m[2])]))
+    const under = q => rules(blocks.filter(b => b.query === q).map(b => b.body).join(''))
+    const schemes = { dark: { ...rules(flat), ...under('(prefers-color-scheme:dark)') }, light: { ...rules(flat), ...under('(prefers-color-scheme:light)') } }
+    // the gutter sits on the app's own background, not on the strip's backing
+    const PAGES = { dark: ['#1F1E1D', '#262624'], light: ['#FFFFFF', '#FAF9F5'] }
+    const worst = {}
+    const seen = new Set()
+    const isDark = c => c !== undefined && luminance(c) < 0.05
+    const isLight = c => c !== undefined && luminance(c) > 0.7
+    if (!(isDark(schemes.dark.sb) && isLight(schemes.dark.sn))) seen.add('the dark scheme is not light text on a dark backing')
+    if (!(isLight(schemes.light.sb) && isDark(schemes.light.sn))) seen.add('the light scheme is not dark text on a light backing')
+    for (const [name, k] of Object.entries(schemes)) {
+      let min = Infinity
+      const check = (fg, bg, what) => {
+        if (!fg || !bg) {
+          seen.add(`${name} ${what} unpaired`)
+          min = 0
+          return
+        }
+        min = Math.min(min, contrast(fg, bg))
+      }
+      for (const src of v.strips) {
+        const sb = src.indexOf('class="sb"')
+        if (sb < 0) seen.add('no backing')
+        else if ([src.search(/class="g[um]"/), src.search(/fill-opacity="\.1\d"/)].some(x => x >= 0 && x < sb)) seen.add('backing drawn over the gutter or the tint')
+        if (/style="fill:/.test(src)) seen.add('inline fill')
+        const tint = src.match(/fill="(#[0-9A-Fa-f]{6})" fill-opacity="(\.\d+)"/)
+        const back = tint && k.sb ? over(k.sb, toRgb(tint[1]), Number(tint[2])) : null
+        if (src.includes('class="sn"')) check(k.sn, back, 'name')
+        if (/class="(?:sn )?st"/.test(src)) check(k.st, back, 'dim')
+        for (const m of src.matchAll(/ w-(\w+)/g)) check(k[`w-${m[1]}`], back, `word ${m[1]}`)
+        for (const page of PAGES[name]) {
+          if (src.includes('class="gu"')) check(k.gu, toRgb(page), 'gutter')
+          if (src.includes('class="gm"')) check(k.gm, toRgb(page), 'more gutter')
+        }
+      }
+      worst[name] = min
+    }
+    const words = new Set([...v.strips.join('').matchAll(/class="sn w-(\w+)/g)].map(m => m[1]))
+    const kc = v.track.match(/\.kc\{[^}]*\}/)?.[0] ?? ''
+    const ok = worst.dark >= 4.5 && worst.light >= 4.5 && seen.size === 0 && words.has('running') && words.has('waiting') && v.strips.some(s => s.includes('class="gm"')) && !kc.includes('opacity')
+    return [`worst dark ${worst.dark.toFixed(2)}, light ${worst.light.toFixed(2)}; words ${[...words]}; ${[...seen].join(', ') || 'backed, no inline fills'}; pill count ${kc}`, ok]
+  },
+  async terminal_strip_text_reads_in_light_and_dark() {
+    // issue #13 in the terminal: the name, its model, the tool word, the time and the pill's count read at AA in either
+    // theme, as the engine paints them (4-bit colour)
+    const q = c => c.map(v => Math.round(v / 17) * 17)
+    const parts = c => [(c >> 16) & 255, (c >> 8) & 255, c & 255]
+    const worst = {}
+    for (const theme of ['light', 'dark']) {
+      await withMachine({ MAC: false, THEME: theme }, async () => {
+        const F = await boot(file)
+        await create(F)
+        for (const [id, title] of [['g1', 'Run the tests'], ['g2', 'Ask first'], ['g3', 'Break'], ['g4', 'Old one'], ['g5', 'Old two'], ['g6', 'Old three'], ['g7', 'Last one']]) await F.spawn(id, title)
+        await F.step('g1', 'high')
+        await F.agentTool('g1', 'Bash')
+        await F.hold('g2')
+        await F.turnComplete('g3', 'error')
+        for (const id of ['g4', 'g5', 'g6', 'g7']) await F.turnComplete(id)
+        const nodes = await F.terminal(120)
+        let min = Infinity
+        for (const key of ['strips-t', 'track-t']) {
+          const r = nodes.find(n => n.type === 'Raster' && n.props.key === key)
+          const w = new Uint32Array(Uint8Array.from(Buffer.from(r?.props.cells ?? '', 'base64')).buffer)
+          if (w.length === 0) min = 0
+          for (let i = 0; i < w.length; i += 3) {
+            const ch = String.fromCodePoint(w[i])
+            if (ch === ' ' || ch === '●' || ch === '│' || (w[i] >= 0x2800 && w[i] <= 0x28ff) || w[i + 1] & 0x01000000) continue
+            min = Math.min(min, contrast(q(parts(w[i + 1])), q(parts(w[i + 2]))))
+          }
+        }
+        worst[theme] = min
+      })
+    }
+    return [`worst light ${worst.light.toFixed(2)}, dark ${worst.dark.toFixed(2)}`, worst.light >= 4.5 && worst.dark >= 4.5]
+  },
+  async bars_keep_what_is_drawn_under_them(E) {
+    // issue #15: the host's own line above the prompt, and other plugins', stay under the bars on both surfaces
+    let asked = 0
+    globalThis.BELOW = () => (asked++, { type: 'Text', props: { key: 'host' }, children: ['host line'] })
+    try {
+      await create(E)
+      const desktop = walkAll(await E.raw('ui.render', { component: 'AbovePrompt', surface: 'desktop', props: { bodyColumns: 140, hasSurvey: false } }))
+      const terminal = await E.terminal(120)
+      const deskHost = desktop.findIndex(n => n.props?.key === 'host')
+      const termHost = terminal.findIndex(n => n.props?.key === 'host')
+      const deskBar = desktop.findIndex(n => n.type === 'Svg')
+      const termBar = terminal.findIndex(n => n.type === 'Raster')
+      const ok = deskBar >= 0 && deskHost > deskBar && termBar >= 0 && termHost > termBar && asked === 2
+      return [`desktop bar at ${deskBar}, host at ${deskHost}; terminal bar at ${termBar}, host at ${termHost}; next asked ${asked}x in 2 draws`, ok]
+    } finally {
+      delete globalThis.BELOW
+    }
+  },
+  async slow_hook_below_leaves_the_band_to_the_newest_draw(E) {
+    // a hook below that answers late must not let an older terminal draw take the band after a newer one: the frames
+    // would repaint the bar where it was
+    let asked = 0
+    globalThis.BELOW = () => (asked++ === 0 ? new Promise(r => setTimeout(() => r(null), 30)) : null)
+    try {
+      await E.turnStart()
+      await create(E)
+      const older = E.terminal(120)
+      await new Promise(r => setTimeout(r, 0))
+      await E.call({ id: 't', next: true })
+      await E.call({ id: 't', next: true })
+      const drawn = (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t')
+      await older
+      const before = E.blits.length
+      E.tick(40)
+      await E.frameTick()
+      const frame = E.blits.slice(before).filter(b => b.key === 'track-t').at(-1)
+      const shown = glyphs(drawn.props.cells)
+      const painted = frame ? glyphs(frame.cells) : ''
+      const ok = shown.includes('Two') && painted.includes('Two')
+      return [`drawn "${shown.match(/[A-Za-z]+ [\d/]+/)?.[0]}", frame paints "${painted.match(/[A-Za-z]+ [\d/]+/)?.[0] ?? 'nothing'}"`, ok]
+    } finally {
+      delete globalThis.BELOW
+    }
   },
 }
 
