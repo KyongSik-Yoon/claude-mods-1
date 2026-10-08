@@ -22,7 +22,7 @@ const trackTint = async E => {
   const r = (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t')
   return backOf(r.props.cells)
 }
-const MACHINE = ['MAC', 'DARK', 'TERM_PROGRAM', 'THEME', 'OMARCHY']
+const MACHINE = ['MAC', 'DARK', 'TERM_PROGRAM', 'THEME', 'SCHEME', 'OMARCHY']
 // every cell's background in a track frame, and the colors.toml of two Omarchy themes
 const backsOf = cells => {
   const w = new Uint32Array(Uint8Array.from(Buffer.from(cells, 'base64')).buffer)
@@ -602,7 +602,7 @@ const C = {
       const tint = await trackTint(E)
       const appearance = E.procs.filter(c => !c.includes('colors.toml')).length
       const omarchy = E.procs.length - appearance
-      return [`appearance commands run ${appearance}, Omarchy looked for ${omarchy}x, track ${tint.toString(16)}`, appearance === 1 && omarchy === 1 && lum(tint) < LUM_MID]
+      return [`appearance commands run ${appearance}, Omarchy looked for ${omarchy}x, track ${tint.toString(16)}`, appearance === 2 && omarchy === 1 && lum(tint) < LUM_MID]
     })
   },
   async omarchy_accent_paints_a_running_bar(E) {
@@ -655,6 +655,146 @@ const C = {
       const reads = E.procs.filter(c => c.includes('colors.toml')).length
       return [`violet ${backs.includes(0x7858ca)}, file read ${reads}x`, backs.includes(0x7858ca) && reads === 1]
     })
+  },
+  async auto_theme_follows_the_linux_desktop(E) {
+    // Linux with "auto": the desktop's color-scheme decides, and a change shows on the next read
+    return withMachine({ MAC: false, SCHEME: 'prefer-light' }, async () => {
+      await E.setTheme('auto')
+      await create(E)
+      await E.terminal(120)
+      E.tick(1000)
+      await E.everyTick()
+      const light = await trackTint(E)
+      globalThis.SCHEME = 'prefer-dark'
+      E.tick(5000)
+      await E.everyTick()
+      const dark = await trackTint(E)
+      const macReads = E.procs.filter(c => c.startsWith('defaults')).length
+      return [`track ${light.toString(16)} → ${dark.toString(16)}, defaults run ${macReads}x`, lum(light) > LUM_MID && lum(dark) < LUM_MID && macReads === 1]
+    })
+  },
+  async linux_desktop_without_a_preference_keeps_the_setting(E) {
+    // 'default' says nothing: "auto" stays on the dark default, and a picked "dark" theme never reads the desktop
+    const auto = await withMachine({ MAC: false, SCHEME: 'default' }, async () => {
+      await E.setTheme('auto')
+      await create(E)
+      await E.terminal(120)
+      E.tick(1000)
+      await E.everyTick()
+      return trackTint(E)
+    })
+    return [`track ${auto.toString(16)}`, lum(auto) < LUM_MID]
+  },
+  async linux_dark_theme_ignores_a_light_desktop(E) {
+    return withMachine({ MAC: false, SCHEME: 'prefer-light' }, async () => {
+      await E.setTheme('dark')
+      await create(E)
+      await E.terminal(120)
+      for (let i = 0; i < 12; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+      const tint = await trackTint(E)
+      // the first read finds the desktop and stops there: a picked "dark" does not follow it
+      const appearance = E.procs.filter(c => !c.includes('colors.toml')).length
+      return [`track ${tint.toString(16)}, appearance commands run ${appearance}`, lum(tint) < LUM_MID && appearance === 2]
+    })
+  },
+  async finished_bar_leaves_after_30s(E) {
+    await create(E)
+    await E.call({ id: 't', state: 'done' })
+    const ticks = async n => {
+      for (let i = 0; i < n; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+    }
+    await ticks(29)
+    const at29 = !!E.bar('t')
+    await ticks(2)
+    const at31 = !!E.bar('t')
+    return [`shown at 29s ${at29}, at 31s ${at31}`, at29 && !at31]
+  },
+  async autoclose_command_keeps_finished_bars(E) {
+    // /plan-progress-autoclose turns auto-close off and on again; off, a finished bar stays until closed
+    const ticks = async n => {
+      for (let i = 0; i < n; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+    }
+    const off = (await E.command('plan-progress-autoclose')).text
+    await create(E)
+    await E.call({ id: 't', state: 'done' })
+    await ticks(60)
+    const kept = !!E.bar('t')
+    const on = (await E.command('plan-progress-autoclose')).text
+    await ticks(1)
+    const gone = !E.bar('t')
+    return [`off: "${off}"; kept a minute ${kept}; on: "${on}"; gone ${gone}`, /stay until closed/.test(off) && kept && /leave 30 s/.test(on) && gone]
+  },
+  async autoclose_choice_lasts_a_new_session(E) {
+    // the choice is kept in the store, so the next session starts with auto-close off as well
+    const kept = new Map()
+    const A = await boot(file, kept)
+    await A.command('plan-progress-autoclose')
+    const B = await boot(file, kept)
+    await create(B)
+    await B.call({ id: 't', state: 'done' })
+    for (let i = 0; i < 40; i++) {
+      B.tick(1000)
+      await B.everyTick()
+    }
+    return [`stored ${kept.get('autoclose')}, bar after 40 s in the next session ${!!B.bar('t')}`, kept.get('autoclose') === 'false' && !!B.bar('t')]
+  },
+  async done_bar_seconds_comes_from_the_config() {
+    // the doneBarSeconds option sets how long a finished bar stays
+    globalThis.OPTIONS = { doneBarSeconds: 10 }
+    try {
+      const F = await boot(file)
+      await create(F)
+      await F.call({ id: 't', state: 'done' })
+      const ticks = async n => {
+        for (let i = 0; i < n; i++) {
+          F.tick(1000)
+          await F.everyTick()
+        }
+      }
+      await ticks(9)
+      const at9 = !!F.bar('t')
+      await ticks(2)
+      const at11 = !!F.bar('t')
+      return [`shown at 9 s ${at9}, at 11 s ${at11}`, at9 && !at11]
+    } finally {
+      delete globalThis.OPTIONS
+    }
+  },
+  async failed_or_waiting_bar_stays(E) {
+    await create(E, 'x')
+    await create(E, 'y')
+    await E.call({ id: 'x', state: 'error', note: 'broke' })
+    await E.call({ id: 'y', state: 'needs_input', note: 'which one?' })
+    for (let i = 0; i < 60; i++) {
+      E.tick(1000)
+      await E.everyTick()
+    }
+    return [`after 60s: error ${!!E.bar('x')}, needs input ${!!E.bar('y')}`, !!E.bar('x') && !!E.bar('y')]
+  },
+  async finished_bar_waits_for_its_agents(E) {
+    await create(E)
+    await E.spawn('ag1', 'Scan tests')
+    await E.call({ id: 't', state: 'done' })
+    for (let i = 0; i < 40; i++) {
+      E.tick(1000)
+      await E.everyTick()
+    }
+    const whileRunning = !!E.bar('t')
+    await E.turnComplete('ag1')
+    for (let i = 0; i < 31; i++) {
+      E.tick(1000)
+      await E.everyTick()
+    }
+    return [`kept while its agent runs ${whileRunning}, gone after ${!E.bar('t')}`, whileRunning && !E.bar('t')]
   },
   async desktop_never_reads_the_appearance(E) {
     return withMachine({ TERM_PROGRAM: 'Apple_Terminal' }, async () => {

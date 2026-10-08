@@ -10,7 +10,8 @@ export async function boot(file, kept = new Map()) {
   const load = async () => {
     const mod = await import(new URL(file, import.meta.url).href + '?n=' + Math.random())
     hooks = []
-    mod.register((event, a, b) => hooks.push(b ? { event, matcher: a, fn: b } : { event, matcher: null, fn: a }), {})
+    // globalThis.OPTIONS plays the userConfig values the manifest declares
+    mod.register((event, a, b) => hooks.push(b ? { event, matcher: a, fn: b } : { event, matcher: null, fn: a }), globalThis.OPTIONS ?? {})
   }
   await load()
 
@@ -22,7 +23,8 @@ export async function boot(file, kept = new Map()) {
   let toolSpec = null
   const blits = []
   // the machine the stub plays: globalThis.MAC (default true), DARK for the macOS appearance,
-  // TERM_PROGRAM for the terminal, THEME for Claude Code's theme setting
+  // TERM_PROGRAM for the terminal, THEME for Claude Code's theme setting, SCHEME for a Linux desktop's
+  // color-scheme (gsettings is missing while it is unset)
   const procs = []
   const procEnvs = []
   const $ = {
@@ -56,6 +58,10 @@ export async function boot(file, kept = new Map()) {
         // OMARCHY plays the active Omarchy theme's colors.toml; unset, the file is missing
         if (argv[0] === '/bin/sh' && String(argv[2]).includes('colors.toml')) {
           return globalThis.OMARCHY === undefined ? { exitCode: 1, stdout: '', stderr: 'No such file or directory' } : { exitCode: 0, stdout: globalThis.OMARCHY, stderr: '' }
+        }
+        if (argv[0] === 'gsettings') {
+          if (globalThis.SCHEME === undefined) throw new Error('gsettings: not found')
+          return { exitCode: 0, stdout: `'${globalThis.SCHEME}'\n`, stderr: '' }
         }
         if (globalThis.MAC === false) throw new Error(`${argv[0]}: not found`)
         if (argv[0] === 'defaults') return { exitCode: globalThis.DARK ? 0 : 1, stdout: globalThis.DARK ? 'Dark\n' : '', stderr: '' }
