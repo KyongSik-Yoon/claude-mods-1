@@ -20,6 +20,26 @@ const FOLD_MS = 5000 // finished strips stay this long, failed ones stay until t
 // shouts louder than another, and white on each reads at 4.5:1 or better
 const STATE_COLOR: Record<PlanState, string> = { running: '#7858CA', needs_input: '#AD6400', error: '#C5353E', done: '#18883A' }
 const INK = '#FFFFFF'
+
+// the Omarchy theme in use, read from its colors.toml: a running bar takes its accent, the terminal track its
+// background and foreground, and its mode says light or dark. Null anywhere else, where the defaults above stay
+type Omarchy = { accent: string; background: number[]; foreground: number[]; isLight: boolean }
+let omarchy: Omarchy | null = null
+const stateColor = (s: PlanState) => (s === 'running' && omarchy ? omarchy.accent : STATE_COLOR[s])
+
+function parseOmarchy(toml: string): Omarchy | null {
+  const color = (key: string) => new RegExp(`^\\s*${key}\\s*=\\s*["'](#[0-9a-fA-F]{6})["']`, 'm').exec(toml)?.[1]?.toLowerCase()
+  const accent = color('accent')
+  if (!accent) return null
+  const background = hex(color('background') ?? '#1b1b1b')
+  const foreground = hex(color('foreground') ?? '#e0e0e0')
+  const mode = /^\s*mode\s*=\s*["'](light|dark)["']/m.exec(toml)?.[1]
+  return { accent, background, foreground, isLight: mode ? mode === 'light' : luminance(background) > 0.5 }
+}
+
+const luminance = (c: number[]) => (0.2126 * (c[0] ?? 0) + 0.7152 * (c[1] ?? 0) + 0.0722 * (c[2] ?? 0)) / 255
+// text on a pill: white, or the theme's background on a light accent (a yellow, a pastel)
+const inkOn = (c: number[]) => (omarchy && luminance(c) > 0.62 ? omarchy.background : [255, 255, 255])
 const STATE_GLYPH: Record<PlanState, string> = { running: '●', needs_input: '?', error: '!', done: '✓' }
 const STATUSES: StepStatus[] = ['pending', 'active', 'done', 'error', 'skipped']
 const TRACK_H = 22
@@ -326,13 +346,14 @@ function liveSource(template: string, now: number): string {
 // interactive frame, and the desktop rebuilds such frames on every redraw of the band; empty until hovered, the
 // rebuild is invisible. A plan is immutable, so both drawings at one width are reused until the plan changes
 type Track = { base: string; overlay: string }
-const drawn = new WeakMap<Plan, { W: number; track: Track }>()
+const drawn = new WeakMap<Plan, { W: number; color: string; track: Track }>()
 
 function trackSvg(p: Plan, W: number): Track {
   const cached = drawn.get(p)
-  if (cached?.W === W) return cached.track
+  const color = stateColor(p.state)
+  if (cached?.W === W && cached.color === color) return cached.track
   const track = drawTrack(p, W)
-  drawn.set(p, { W, track })
+  drawn.set(p, { W, color, track })
   return track
 }
 
@@ -349,7 +370,7 @@ function drawTrack(p: Plan, W: number): Track {
   const from = last?.W === W ? last.x : fx
   lastHead.set(key, { W, x: fx })
 
-  const acc = hex(STATE_COLOR[p.state])
+  const acc = hex(stateColor(p.state))
   const light = mix(acc, [255, 255, 255], 0.32)
   const grey = [132, 130, 138]
   const ease = 'calcMode="spline" keyTimes="0;1" keySplines=".2 .8 .2 1"'
@@ -417,7 +438,7 @@ function drawTrack(p: Plan, W: number): Track {
 
   // knob: a pill with stage and count, or a round dot with the stage number when narrow
   const isNarrow = W < NARROW
-  const color = STATE_COLOR[p.state]
+  const color = stateColor(p.state)
   const icon = ICON_PATH[p.state]
   const single = p.stages.length === 1
   const number = single ? w.step : w.stage + 1
@@ -503,6 +524,7 @@ const AGENT_COLOR: Record<AgentRun['state'], string> = {
   done: STATE_COLOR.done,
   error: STATE_COLOR.error,
 }
+const agentColor = (s: AgentRun['state']) => (s === 'running' ? stateColor('running') : AGENT_COLOR[s])
 
 // strip text that reads at WCAG AA (4.5:1) on its tint, in a dark and a light scheme (issue #13). The desktop draws
 // a strip as a picture over the app's background, which no event tells the plugin: the picture carries both sets,
@@ -614,7 +636,7 @@ function stripsSvg(v: { shown: AgentRun[]; hidden: AgentRun[] }, all: AgentRun[]
       rows.push({ key: a.id, html: cachedRow.html, height: y + STRIP_H })
       return
     }
-    const c = AGENT_COLOR[a.state]
+    const c = agentColor(a.state)
     const indent = a.depth > 0 ? 10 : 0
     const word = a.state === 'running' || a.state === 'waiting' ? a.tool : ''
     const dots = new Map<string, string>()
@@ -698,8 +720,8 @@ function plural(n: number, word: string) {
 
 const DEFAULT = 0x01000000
 let isLight = false
-const termBg = () => (isLight ? [255, 255, 255] : [24, 24, 27])
-const termFg = () => (isLight ? [34, 34, 38] : [240, 238, 252])
+const termBg = () => omarchy?.background ?? (isLight ? [255, 255, 255] : [24, 24, 27])
+const termFg = () => omarchy?.foreground ?? (isLight ? [34, 34, 38] : [240, 238, 252])
 const scheme = () => SCHEMES[isLight ? 'light' : 'dark']
 const pack = (c: number[]) => ((c[0] ?? 0) << 16) | ((c[1] ?? 0) << 8) | (c[2] ?? 0)
 // a Raster cell takes one printable BMP character exactly one column wide, as the engine measures it
@@ -841,7 +863,7 @@ function trackCells(p: Plan, W: number, t: number): string {
   const phase = isAnimated(p, t) ? t : (stillPhase.get(p.id) ?? 0)
   stillPhase.set(p.id, phase)
   const back = termBg()
-  const acc = hex(STATE_COLOR[p.state])
+  const acc = hex(stateColor(p.state))
   const light = mix(acc, [255, 255, 255], 0.35)
   const grey = [120, 118, 128]
   const track = mix(back, [128, 128, 128], isLight ? 0.14 : 0.18)
@@ -885,7 +907,7 @@ function trackCells(p: Plan, W: number, t: number): string {
     k += s.steps.length
   })
 
-  const base = hex(STATE_COLOR[p.state])
+  const base = hex(stateColor(p.state))
   const color = base
   const single = p.stages.length === 1
   const number = single ? Math.min(w.total, w.pos + 1) : w.stage + 1
@@ -905,7 +927,7 @@ function trackCells(p: Plan, W: number, t: number): string {
   const shown = lead + fit(name, maxName)
   const kw = cellsOf(shown) + (count ? count.length + 1 : 0) + 2
   const kx = Math.round(Math.max(0, Math.min(W - kw, fx - kw / 2)))
-  const white = pack([255, 255, 255])
+  const white = pack(inkOn(color))
   pill(g, 0, kx, kx + kw, () => color)
   let at = kx + 1
   at += g.text(at, 0, shown, white, pack(color))
@@ -919,7 +941,7 @@ function stripCells(v: { shown: AgentRun[]; hidden: AgentRun[] }, W: number, now
   const back = termBg()
   const text = pack(termFg())
   v.shown.forEach((a, y) => {
-    const c = hex(AGENT_COLOR[a.state])
+    const c = hex(agentColor(a.state))
     const tint = mix(back, c, 0.18)
     pill(g, y, 0, W, () => tint)
     const running = a.state === 'running' || a.state === 'waiting'
@@ -962,7 +984,7 @@ function stripCells(v: { shown: AgentRun[]; hidden: AgentRun[] }, W: number, now
     if (narrow) return
     if (word) {
       for (let i = -1; i <= word.length; i++) g.set(toolAt + i, y, ' ', DEFAULT, pack(tint))
-      g.text(toolAt, y, word, pack(hex(scheme().word[a.state])), pack(tint))
+      g.text(toolAt, y, word, pack(hex(a.state === 'running' && omarchy ? omarchy.accent : scheme().word[a.state])), pack(tint))
     }
     for (let i = -1; i < time.length; i++) g.set(tx + i, y, ' ', DEFAULT, pack(tint))
     g.text(tx, y, time, dim, pack(tint))
@@ -1020,7 +1042,29 @@ let appearanceAt = -Infinity
 let isProbing = false
 
 const followsSystem = () => mac !== 'no' && (themeSetting === 'auto' || (themeSetting === 'dark' && (mac === 'unknown' || termProgram === 'Apple_Terminal')))
-const tintIsLight = () => (followsSystem() && isSystemDark !== null ? !isSystemDark : /light/i.test(themeSetting))
+// an Omarchy theme paints the terminal itself, so its mode wins over the setting and the macOS appearance
+const tintIsLight = () => (omarchy ? omarchy.isLight : followsSystem() && isSystemDark !== null ? !isSystemDark : /light/i.test(themeSetting))
+
+// the Omarchy theme is read like the appearance: while a terminal bar is on screen, at most every APPEARANCE_MS, so a
+// theme switch follows within seconds; a machine without the file (or a file without an accent) is never read again
+const OMARCHY_COLORS = 'cat "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme/colors.toml"'
+let hasOmarchy = true
+let omarchyAt = -Infinity
+
+async function readOmarchy($: EngineInterface, now: number) {
+  if (!hasOmarchy || now - omarchyAt < APPEARANCE_MS) return
+  omarchyAt = now
+  const r = await $.process.run(['/bin/sh', '-c', OMARCHY_COLORS], { timeoutMs: 2000 }).catch(() => null)
+  const found = r && r.exitCode === 0 ? parseOmarchy(r.stdout) : null
+  if (!found) {
+    hasOmarchy = false
+    omarchy = null
+    return
+  }
+  const was = omarchy
+  if (was && was.accent === found.accent && was.isLight === found.isLight && String(was.background) === String(found.background) && String(was.foreground) === String(found.foreground)) return
+  omarchy = found
+}
 
 async function probeAppearance($: EngineInterface, now: number) {
   if (isProbing || !followsSystem() || now - appearanceAt < APPEARANCE_MS) return
@@ -1047,9 +1091,11 @@ async function probeAppearance($: EngineInterface, now: number) {
 
 // reads the appearance when due and repaints the bars at once if the tint changed
 async function syncTint($: EngineInterface, now: number) {
-  if (band) await probeAppearance($, now)
+  const before = omarchy
+  if (band) await readOmarchy($, now)
+  if (band && !omarchy) await probeAppearance($, now)
   const next = tintIsLight()
-  if (next === isLight) return
+  if (next === isLight && omarchy === before) return
   isLight = next
   const b = band
   if (b) await blitPlans($, b, b.list, now)
@@ -1744,7 +1790,7 @@ export const register: Register = on => {
             return (
               <Box key={`bar-${p.id}`} flexDirection="column">
                 <Box flexDirection="row" gap={1}>
-                  <Text color={STATE_COLOR[p.state]}>{STATE_GLYPH[p.state]}</Text>
+                  <Text color={stateColor(p.state)}>{STATE_GLYPH[p.state]}</Text>
                   <Box width={titleW} flexShrink={0}>
                     <Text wrap="truncate">{p.title}</Text>
                   </Box>
@@ -1759,7 +1805,7 @@ export const register: Register = on => {
                 </Box>
                 {p.note && p.state !== 'running' ? (
                   <Box marginLeft={titleW + 3}>
-                    <Text color={STATE_COLOR[p.state]} wrap="truncate">{p.note}</Text>
+                    <Text color={stateColor(p.state)} wrap="truncate">{p.note}</Text>
                   </Box>
                 ) : null}
                 {strips ? (
@@ -1824,7 +1870,7 @@ export const register: Register = on => {
           const line = i > 0 && Svg ? [<Svg key={`div-${p.id}`} source={divider} alt="divider" width={total} height={1} />] : []
           const w = where(p)
           const pct = percent(p, w)
-          const color = STATE_COLOR[p.state]
+          const color = stateColor(p.state)
           const stageName = p.stages[w.stage]?.name ?? ''
           const alt =
             p.state === 'done'

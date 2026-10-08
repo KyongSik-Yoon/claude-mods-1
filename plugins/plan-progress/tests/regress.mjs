@@ -22,7 +22,21 @@ const trackTint = async E => {
   const r = (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t')
   return backOf(r.props.cells)
 }
-const MACHINE = ['MAC', 'DARK', 'TERM_PROGRAM', 'THEME']
+const MACHINE = ['MAC', 'DARK', 'TERM_PROGRAM', 'THEME', 'OMARCHY']
+// every cell's background in a track frame, and the colors.toml of two Omarchy themes
+const backsOf = cells => {
+  const w = new Uint32Array(Uint8Array.from(Buffer.from(cells, 'base64')).buffer)
+  const out = []
+  for (let i = 2; i < w.length; i += 3) out.push(w[i])
+  return out
+}
+const latestTrack = async E => {
+  const blit = E.blits.filter(b => b.key === 'track-t').at(-1)
+  if (blit) return blit.cells
+  return (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t').props.cells
+}
+const OMARCHY_LIGHT = 'mode = "light"\naccent = "#3264eb"\nbackground = "#fafafa"\nforeground = "#212121"\n'
+const OMARCHY_DARK = 'accent = "#e75a50"\nforeground = "#efebdc"\nbackground = "#1B1B1B"\n'
 // the tint tests play a machine through globals; each run starts from a light Mac and cleans up after itself
 async function withMachine(set, run) {
   for (const k of MACHINE) delete globalThis[k]
@@ -556,7 +570,8 @@ const C = {
         await E.everyTick()
       }
       const tint = await trackTint(E)
-      return [`track ${tint.toString(16)}, commands run ${E.procs.length}`, lum(tint) > LUM_MID && E.procs.length === 0]
+      const appearance = E.procs.filter(c => !c.includes('colors.toml')).length
+      return [`track ${tint.toString(16)}, appearance commands run ${appearance}`, lum(tint) > LUM_MID && appearance === 0]
     })
   },
   async auto_theme_follows_the_mac_in_any_terminal(E) {
@@ -585,7 +600,60 @@ const C = {
         await E.everyTick()
       }
       const tint = await trackTint(E)
-      return [`commands run ${E.procs.length}, track ${tint.toString(16)}`, E.procs.length === 1 && lum(tint) < LUM_MID]
+      const appearance = E.procs.filter(c => !c.includes('colors.toml')).length
+      const omarchy = E.procs.length - appearance
+      return [`appearance commands run ${appearance}, Omarchy looked for ${omarchy}x, track ${tint.toString(16)}`, appearance === 1 && omarchy === 1 && lum(tint) < LUM_MID]
+    })
+  },
+  async omarchy_accent_paints_a_running_bar(E) {
+    // Linux with Omarchy and the "auto" theme: the pill takes the accent, the track the theme's light background
+    return withMachine({ MAC: false, OMARCHY: OMARCHY_LIGHT }, async () => {
+      await E.setTheme('auto')
+      await create(E)
+      await E.terminal(120)
+      E.tick(1000)
+      await E.everyTick()
+      const backs = backsOf(await latestTrack(E))
+      const hasAccent = backs.includes(0x3264eb)
+      const track = backs.at(-1)
+      return [`accent ${hasAccent}, track ${track.toString(16)}`, hasAccent && !backs.includes(0x7858ca) && lum(track) > LUM_MID]
+    })
+  },
+  async omarchy_theme_switch_follows(E) {
+    // switching the Omarchy theme repaints the bar within one read: new accent, dark track
+    return withMachine({ MAC: false, OMARCHY: OMARCHY_LIGHT }, async () => {
+      await E.setTheme('auto')
+      await create(E)
+      await E.terminal(120)
+      E.tick(1000)
+      await E.everyTick()
+      const before = E.blits.length
+      globalThis.OMARCHY = OMARCHY_DARK
+      E.tick(5000)
+      await E.everyTick()
+      const fresh = E.blits.slice(before).filter(b => b.key === 'track-t').at(-1)
+      const backs = fresh ? backsOf(fresh.cells) : []
+      const track = backs.at(-1) ?? 0xffffff
+      const done = await (async () => {
+        await E.call({ id: 't', state: 'done' })
+        const drawn = (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t')
+        return backsOf(drawn.props.cells).includes(0x18883a)
+      })()
+      return [`repaint ${!!fresh}, accent ${backs.includes(0xe75a50)}, track ${track.toString(16)}, done green ${done}`, !!fresh && backs.includes(0xe75a50) && lum(track) < LUM_MID && done]
+    })
+  },
+  async without_omarchy_the_bar_stays_violet(E) {
+    // no colors.toml: the default violet stays and the file is looked for once only
+    return withMachine({ MAC: false }, async () => {
+      await create(E)
+      await E.terminal(120)
+      for (let i = 0; i < 12; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+      const backs = backsOf(await latestTrack(E))
+      const reads = E.procs.filter(c => c.includes('colors.toml')).length
+      return [`violet ${backs.includes(0x7858ca)}, file read ${reads}x`, backs.includes(0x7858ca) && reads === 1]
     })
   },
   async desktop_never_reads_the_appearance(E) {
