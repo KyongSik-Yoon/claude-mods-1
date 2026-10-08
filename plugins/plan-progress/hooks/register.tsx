@@ -1009,37 +1009,60 @@ function syncFrames($: EngineInterface, now: number) {
 
 // ---------- terminal tint ----------
 // the track's light or dark tint: a theme the person picked wins; "auto", and the default "dark" inside Terminal.app
-// (whose stock profiles follow macOS), take the macOS appearance. The appearance is read only while a terminal bar
-// is on screen, at most every APPEARANCE_MS, and never again once the command turns out to be missing (not a Mac)
+// (whose stock profiles follow macOS), take the macOS appearance. Off a Mac, "auto" takes the desktop's
+// color-scheme (GNOME and the desktops that share its setting). The appearance is read only while a terminal bar
+// is on screen, at most every APPEARANCE_MS, and never again once neither command is there
 const APPEARANCE_MS = 5000
 let themeSetting = 'dark'
-let mac: 'unknown' | 'yes' | 'no' = 'unknown'
+let system: 'unknown' | 'mac' | 'gnome' | 'none' = 'unknown'
 let termProgram = ''
 let isSystemDark: boolean | null = null
 let appearanceAt = -Infinity
 let isProbing = false
 
-const followsSystem = () => mac !== 'no' && (themeSetting === 'auto' || (themeSetting === 'dark' && (mac === 'unknown' || termProgram === 'Apple_Terminal')))
+const followsSystem = () =>
+  system !== 'none' &&
+  (themeSetting === 'auto' || (themeSetting === 'dark' && (system === 'unknown' || (system === 'mac' && termProgram === 'Apple_Terminal'))))
 const tintIsLight = () => (followsSystem() && isSystemDark !== null ? !isSystemDark : /light/i.test(themeSetting))
+
+// the macOS appearance: the key is missing in light mode, so anything but "Dark" reads as light; null off a Mac
+async function readMac($: EngineInterface) {
+  const r = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 2000 }).catch(() => null)
+  return r ? /dark/i.test(r.stdout) : null
+}
+
+// the desktop's color-scheme: 'prefer-dark' or 'prefer-light'; 'default' says nothing, so the theme setting decides
+async function readGnome($: EngineInterface) {
+  const r = await $.process.run(['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'], { timeoutMs: 2000 }).catch(() => null)
+  if (!r || r.exitCode !== 0) return undefined
+  return /prefer-dark/.test(r.stdout) ? true : /prefer-light/.test(r.stdout) ? false : null
+}
 
 async function probeAppearance($: EngineInterface, now: number) {
   if (isProbing || !followsSystem() || now - appearanceAt < APPEARANCE_MS) return
   isProbing = true
   appearanceAt = now
   try {
-    const r = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 2000 }).catch(() => null)
-    if (!r) {
-      // no such command: not a Mac, so the theme setting alone decides from here on
-      mac = 'no'
+    if (system !== 'gnome') {
+      const dark = await readMac($)
+      if (dark !== null) {
+        if (system === 'unknown') {
+          const t = await $.process.run(['/bin/sh', '-c', 'printf %s "$TERM_PROGRAM"'], { timeoutMs: 2000 }).catch(() => null)
+          termProgram = t?.stdout.trim() ?? ''
+          system = 'mac'
+        }
+        isSystemDark = dark
+        return
+      }
+    }
+    const dark = await readGnome($)
+    if (dark === undefined) {
+      // neither command: the theme setting alone decides from here on
+      system = 'none'
       return
     }
-    if (mac === 'unknown') {
-      const t = await $.process.run(['/bin/sh', '-c', 'printf %s "$TERM_PROGRAM"'], { timeoutMs: 2000 }).catch(() => null)
-      termProgram = t?.stdout.trim() ?? ''
-      mac = 'yes'
-    }
-    // the key is missing in light mode, so anything but "Dark" reads as light
-    isSystemDark = /dark/i.test(r.stdout)
+    system = 'gnome'
+    isSystemDark = dark
   } finally {
     isProbing = false
   }

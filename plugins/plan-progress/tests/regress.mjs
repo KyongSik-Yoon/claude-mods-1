@@ -22,7 +22,7 @@ const trackTint = async E => {
   const r = (await E.terminal(120)).find(n => n.type === 'Raster' && n.props.key === 'track-t')
   return backOf(r.props.cells)
 }
-const MACHINE = ['MAC', 'DARK', 'TERM_PROGRAM', 'THEME']
+const MACHINE = ['MAC', 'DARK', 'TERM_PROGRAM', 'THEME', 'SCHEME']
 // the tint tests play a machine through globals; each run starts from a light Mac and cleans up after itself
 async function withMachine(set, run) {
   for (const k of MACHINE) delete globalThis[k]
@@ -585,7 +585,50 @@ const C = {
         await E.everyTick()
       }
       const tint = await trackTint(E)
-      return [`commands run ${E.procs.length}, track ${tint.toString(16)}`, E.procs.length === 1 && lum(tint) < LUM_MID]
+      return [`commands run ${E.procs.length}, track ${tint.toString(16)}`, E.procs.length === 2 && lum(tint) < LUM_MID]
+    })
+  },
+  async auto_theme_follows_the_linux_desktop(E) {
+    // Linux with "auto": the desktop's color-scheme decides, and a change shows on the next read
+    return withMachine({ MAC: false, SCHEME: 'prefer-light' }, async () => {
+      await E.setTheme('auto')
+      await create(E)
+      await E.terminal(120)
+      E.tick(1000)
+      await E.everyTick()
+      const light = await trackTint(E)
+      globalThis.SCHEME = 'prefer-dark'
+      E.tick(5000)
+      await E.everyTick()
+      const dark = await trackTint(E)
+      const macReads = E.procs.filter(c => c.startsWith('defaults')).length
+      return [`track ${light.toString(16)} → ${dark.toString(16)}, defaults run ${macReads}x`, lum(light) > LUM_MID && lum(dark) < LUM_MID && macReads === 1]
+    })
+  },
+  async linux_desktop_without_a_preference_keeps_the_setting(E) {
+    // 'default' says nothing: "auto" stays on the dark default, and a picked "dark" theme never reads the desktop
+    const auto = await withMachine({ MAC: false, SCHEME: 'default' }, async () => {
+      await E.setTheme('auto')
+      await create(E)
+      await E.terminal(120)
+      E.tick(1000)
+      await E.everyTick()
+      return trackTint(E)
+    })
+    return [`track ${auto.toString(16)}`, lum(auto) < LUM_MID]
+  },
+  async linux_dark_theme_ignores_a_light_desktop(E) {
+    return withMachine({ MAC: false, SCHEME: 'prefer-light' }, async () => {
+      await E.setTheme('dark')
+      await create(E)
+      await E.terminal(120)
+      for (let i = 0; i < 12; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+      const tint = await trackTint(E)
+      // the first read finds the desktop and stops there: a picked "dark" does not follow it
+      return [`track ${tint.toString(16)}, commands run ${E.procs.length}`, lum(tint) < LUM_MID && E.procs.length === 2]
     })
   },
   async finished_bar_leaves_after_30s(E) {
