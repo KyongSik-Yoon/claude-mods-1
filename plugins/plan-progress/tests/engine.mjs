@@ -22,7 +22,8 @@ export async function boot(file, kept = new Map()) {
   let toolSpec = null
   const blits = []
   // the machine the stub plays: globalThis.MAC (default true), DARK for the macOS appearance,
-  // TERM_PROGRAM for the terminal, THEME for Claude Code's theme setting
+  // TERM_PROGRAM for the terminal, THEME for Claude Code's theme setting, SCHEME for a Linux desktop's
+  // color-scheme (gsettings is missing while it is unset)
   const procs = []
   const procEnvs = []
   const $ = {
@@ -53,6 +54,10 @@ export async function boot(file, kept = new Map()) {
       run: async (argv, init) => {
         procs.push(argv.join(' '))
         procEnvs.push(init?.env ?? {})
+        if (argv[0] === 'gsettings') {
+          if (globalThis.SCHEME === undefined) throw new Error('gsettings: not found')
+          return { exitCode: 0, stdout: `'${globalThis.SCHEME}'\n`, stderr: '' }
+        }
         if (globalThis.MAC === false) throw new Error(`${argv[0]}: not found`)
         if (argv[0] === 'defaults') return { exitCode: globalThis.DARK ? 0 : 1, stdout: globalThis.DARK ? 'Dark\n' : '', stderr: '' }
         if (argv[0] === '/bin/sh') return { exitCode: 0, stdout: globalThis.TERM_PROGRAM ?? '', stderr: '' }
