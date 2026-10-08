@@ -646,6 +646,60 @@ const C = {
     const at31 = !!E.bar('t')
     return [`shown at 29s ${at29}, at 31s ${at31}`, at29 && !at31]
   },
+  async autoclose_command_keeps_finished_bars(E) {
+    // /plan-progress-autoclose turns auto-close off and on again; off, a finished bar stays until closed
+    const ticks = async n => {
+      for (let i = 0; i < n; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+    }
+    const off = (await E.command('plan-progress-autoclose')).text
+    await create(E)
+    await E.call({ id: 't', state: 'done' })
+    await ticks(60)
+    const kept = !!E.bar('t')
+    const on = (await E.command('plan-progress-autoclose')).text
+    await ticks(1)
+    const gone = !E.bar('t')
+    return [`off: "${off}"; kept a minute ${kept}; on: "${on}"; gone ${gone}`, /stay until closed/.test(off) && kept && /leave 30 s/.test(on) && gone]
+  },
+  async autoclose_choice_lasts_a_new_session(E) {
+    // the choice is kept in the store, so the next session starts with auto-close off as well
+    const kept = new Map()
+    const A = await boot(file, kept)
+    await A.command('plan-progress-autoclose')
+    const B = await boot(file, kept)
+    await create(B)
+    await B.call({ id: 't', state: 'done' })
+    for (let i = 0; i < 40; i++) {
+      B.tick(1000)
+      await B.everyTick()
+    }
+    return [`stored ${kept.get('autoclose')}, bar after 40 s in the next session ${!!B.bar('t')}`, kept.get('autoclose') === 'false' && !!B.bar('t')]
+  },
+  async done_bar_seconds_comes_from_the_config() {
+    // the doneBarSeconds option sets how long a finished bar stays
+    globalThis.OPTIONS = { doneBarSeconds: 10 }
+    try {
+      const F = await boot(file)
+      await create(F)
+      await F.call({ id: 't', state: 'done' })
+      const ticks = async n => {
+        for (let i = 0; i < n; i++) {
+          F.tick(1000)
+          await F.everyTick()
+        }
+      }
+      await ticks(9)
+      const at9 = !!F.bar('t')
+      await ticks(2)
+      const at11 = !!F.bar('t')
+      return [`shown at 9 s ${at9}, at 11 s ${at11}`, at9 && !at11]
+    } finally {
+      delete globalThis.OPTIONS
+    }
+  },
   async failed_or_waiting_bar_stays(E) {
     await create(E, 'x')
     await create(E, 'y')
