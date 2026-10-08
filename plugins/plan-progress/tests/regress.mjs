@@ -588,6 +588,48 @@ const C = {
       return [`commands run ${E.procs.length}, track ${tint.toString(16)}`, E.procs.length === 1 && lum(tint) < LUM_MID]
     })
   },
+  async finished_bar_leaves_after_30s(E) {
+    await create(E)
+    await E.call({ id: 't', state: 'done' })
+    const ticks = async n => {
+      for (let i = 0; i < n; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+    }
+    await ticks(29)
+    const at29 = !!E.bar('t')
+    await ticks(2)
+    const at31 = !!E.bar('t')
+    return [`shown at 29s ${at29}, at 31s ${at31}`, at29 && !at31]
+  },
+  async failed_or_waiting_bar_stays(E) {
+    await create(E, 'x')
+    await create(E, 'y')
+    await E.call({ id: 'x', state: 'error', note: 'broke' })
+    await E.call({ id: 'y', state: 'needs_input', note: 'which one?' })
+    for (let i = 0; i < 60; i++) {
+      E.tick(1000)
+      await E.everyTick()
+    }
+    return [`after 60s: error ${!!E.bar('x')}, needs input ${!!E.bar('y')}`, !!E.bar('x') && !!E.bar('y')]
+  },
+  async finished_bar_waits_for_its_agents(E) {
+    await create(E)
+    await E.spawn('ag1', 'Scan tests')
+    await E.call({ id: 't', state: 'done' })
+    for (let i = 0; i < 40; i++) {
+      E.tick(1000)
+      await E.everyTick()
+    }
+    const whileRunning = !!E.bar('t')
+    await E.turnComplete('ag1')
+    for (let i = 0; i < 31; i++) {
+      E.tick(1000)
+      await E.everyTick()
+    }
+    return [`kept while its agent runs ${whileRunning}, gone after ${!E.bar('t')}`, whileRunning && !E.bar('t')]
+  },
   async desktop_never_reads_the_appearance(E) {
     return withMachine({ TERM_PROGRAM: 'Apple_Terminal' }, async () => {
       await create(E)

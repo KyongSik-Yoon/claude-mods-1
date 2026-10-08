@@ -1289,6 +1289,11 @@ async function foldPlan($: EngineInterface, id: string) {
   await update($, plans, list => list.map(p => (p.id === id ? { ...p, isFolded: !p.isFolded } : p)))
 }
 
+// a finished bar leaves on its own DONE_STAYS_MS after it finished, once none of its agents is still at work; a failed
+// bar or one waiting on the person stays until it is closed, since it still asks for attention
+const DONE_STAYS_MS = 30_000
+const hasLeft = (p: Plan, now: number) => p.state === 'done' && p.endedAt !== null && now - p.endedAt >= DONE_STAYS_MS && !hasRunningAgents(p)
+
 async function dropPlan($: EngineInterface, id: string) {
   lastHead.delete(id)
   glide.delete(id)
@@ -1588,6 +1593,7 @@ export const register: Register = on => {
       const list = await read($, plans)
       forgetGone(list)
       const now = await $.clock.now()
+      for (const p of list) if (hasLeft(p, now)) await dropPlan($, p.id)
       syncFrames($, now)
       await syncTint($, now)
       if (list !== lastSaved) await savePlans($, list)
