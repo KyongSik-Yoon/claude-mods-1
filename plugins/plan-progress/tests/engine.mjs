@@ -10,7 +10,8 @@ export async function boot(file, kept = new Map()) {
   const load = async () => {
     const mod = await import(new URL(file, import.meta.url).href + '?n=' + Math.random())
     hooks = []
-    mod.register((event, a, b) => hooks.push(b ? { event, matcher: a, fn: b } : { event, matcher: null, fn: a }), {})
+    // globalThis.OPTIONS plays the userConfig values the manifest declares
+    mod.register((event, a, b) => hooks.push(b ? { event, matcher: a, fn: b } : { event, matcher: null, fn: a }), globalThis.OPTIONS ?? {})
   }
   await load()
 

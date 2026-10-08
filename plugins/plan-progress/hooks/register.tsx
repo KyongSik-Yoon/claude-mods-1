@@ -1312,6 +1312,16 @@ async function foldPlan($: EngineInterface, id: string) {
   await update($, plans, list => list.map(p => (p.id === id ? { ...p, isFolded: !p.isFolded } : p)))
 }
 
+// with auto-close on, a finished bar leaves on its own doneStaysMs after it finished, once none of its agents is still
+// at work; a failed bar or one waiting on the person stays until it is closed, since it still asks for attention.
+// /plan-progress-autoclose turns it on and off (kept in the store, so a new session keeps the choice); the seconds are
+// the doneBarSeconds option in /config
+const AUTOCLOSE = 'autoclose'
+let isAutoClose = true
+let doneStaysMs = 30_000
+const hasLeft = (p: Plan, now: number) =>
+  isAutoClose && p.state === 'done' && p.endedAt != null && now - p.endedAt >= doneStaysMs && !hasRunningAgents(p)
+
 async function dropPlan($: EngineInterface, id: string) {
   lastHead.delete(id)
   glide.delete(id)
@@ -1456,7 +1466,10 @@ async function runReel($: EngineInterface, logPath: string) {
   for (const [at, step] of script) $.clock.after(at, () => void step())
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const seconds = Number(options?.doneBarSeconds ?? 30)
+  doneStaysMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 30_000
+
   // per-turn bookkeeping; module variables are fine here, a reload just starts a fresh count
   let workCalls = 0
   let sinceUpdate = 0
@@ -1611,6 +1624,7 @@ export const register: Register = on => {
       const list = await read($, plans)
       forgetGone(list)
       const now = await $.clock.now()
+      for (const p of list) if (hasLeft(p, now)) await dropPlan($, p.id)
       syncFrames($, now)
       await syncTint($, now)
       if (list !== lastSaved) await savePlans($, list)
@@ -1622,6 +1636,8 @@ export const register: Register = on => {
     await $.command.register({ name: 'progress', description: 'Show or hide the progress bars' })
     await $.command.register({ name: 'progress-clear', description: 'Remove all progress bars' })
     await $.command.register({ name: 'progress-agents', description: 'Fold or show the agent strips under the bars' })
+    await $.command.register({ name: 'plan-progress-autoclose', description: 'Turn on or off finished bars leaving on their own' })
+    isAutoClose = (await $.store.get(AUTOCLOSE)) !== false
 
     return next(e)
   })
@@ -1707,6 +1723,18 @@ export const register: Register = on => {
     await update($, plans, all => all.map(p => (foldable.has(p.id) ? { ...p, isFolded: isFolding } : p)))
 
     return { text: isFolding ? 'Agent strips folded; /progress-agents shows them again.' : 'Agent strips shown.' }
+  })
+
+  on('command.run', { command: 'plan-progress-autoclose' }, async $ => {
+    isAutoClose = !isAutoClose
+    await $.store.set(AUTOCLOSE, isAutoClose)
+    const s = Math.round(doneStaysMs / 1000)
+
+    return {
+      text: isAutoClose
+        ? `Finished bars leave ${s} s after they finish; /plan-progress-autoclose keeps them.`
+        : 'Finished bars stay until closed; /plan-progress-autoclose turns auto-close back on.',
+    }
   })
 
   on('command.run', { command: 'progress-clear' }, async $ => {
