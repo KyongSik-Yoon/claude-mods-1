@@ -38,8 +38,28 @@ function parseOmarchy(toml: string): Omarchy | null {
 }
 
 const luminance = (c: number[]) => (0.2126 * (c[0] ?? 0) + 0.7152 * (c[1] ?? 0) + 0.0722 * (c[2] ?? 0)) / 255
-// text on a pill: white, or the theme's background on a light accent (a yellow, a pastel)
-const inkOn = (c: number[]) => (omarchy && luminance(c) > 0.62 ? omarchy.background : [255, 255, 255])
+
+// WCAG 2.x contrast, measured on the 4-bit colour the engine paints a Raster cell in
+const q17 = (c: number[]) => c.map(v => Math.round(v / 17) * 17)
+const relLum = (c: number[]) => {
+  const l = q17(c).map(v => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * (l[0] ?? 0) + 0.7152 * (l[1] ?? 0) + 0.0722 * (l[2] ?? 0)
+}
+const contrast = (a: number[], b: number[]) => (Math.max(relLum(a), relLum(b)) + 0.05) / (Math.min(relLum(a), relLum(b)) + 0.05)
+// text over a theme's colours: the first candidate that reads at AA (4.5:1) on bg, else the one that reads best. The
+// theme's own colours are never changed; the text only picks among them
+function readable(bg: number[], ...candidates: number[][]): number[] {
+  const ok = candidates.find(c => contrast(c, bg) >= 4.5)
+  return ok ?? candidates.reduce((a, b) => (contrast(b, bg) > contrast(a, bg) ? b : a))
+}
+// text on a pill: white, else the theme's background, else its foreground (a yellow or a pastel accent)
+const inkOn = (c: number[]) => (omarchy ? readable(c, [255, 255, 255], omarchy.background, omarchy.foreground) : [255, 255, 255])
+// a word in a colour of its own on a strip: that colour, else it mixed toward the theme's text, else the text
+const wordOn = (bg: number[], c: number[]) =>
+  omarchy ? readable(bg, c, mix(c, omarchy.foreground, 0.3), mix(c, omarchy.foreground, 0.6), omarchy.foreground) : c
+// the model and the time: the theme's text dimmed toward the strip as far as AA allows
+const dimOn = (bg: number[], c: number[]) =>
+  omarchy ? readable(bg, mix(omarchy.foreground, bg, 0.4), mix(omarchy.foreground, bg, 0.25), omarchy.foreground) : c
 const STATE_GLYPH: Record<PlanState, string> = { running: '●', needs_input: '?', error: '!', done: '✓' }
 const STATUSES: StepStatus[] = ['pending', 'active', 'done', 'error', 'skipped']
 const TRACK_H = 22
@@ -979,12 +999,12 @@ function stripCells(v: { shown: AgentRun[]; hidden: AgentRun[] }, W: number, now
     const head = cut > 0 ? name.slice(0, cut) : name
     for (let i = -1; i < name.length + 1 && at + i < W - 1; i++) g.set(at + i, y, ' ', DEFAULT, pack(tint))
     at += g.text(at, y, head, text, pack(tint))
-    const dim = pack(hex(scheme().dim))
+    const dim = pack(dimOn(tint, hex(scheme().dim)))
     if (head !== name) g.text(at, y, name.slice(head.length), dim, pack(tint))
     if (narrow) return
     if (word) {
       for (let i = -1; i <= word.length; i++) g.set(toolAt + i, y, ' ', DEFAULT, pack(tint))
-      g.text(toolAt, y, word, pack(hex(a.state === 'running' && omarchy ? omarchy.accent : scheme().word[a.state])), pack(tint))
+      g.text(toolAt, y, word, pack(wordOn(tint, hex(a.state === 'running' && omarchy ? omarchy.accent : scheme().word[a.state]))), pack(tint))
     }
     for (let i = -1; i < time.length; i++) g.set(tx + i, y, ' ', DEFAULT, pack(tint))
     g.text(tx, y, time, dim, pack(tint))
@@ -994,7 +1014,7 @@ function stripCells(v: { shown: AgentRun[]; hidden: AgentRun[] }, W: number, now
     const tint = mix(back, [128, 128, 128], 0.16)
     pill(g, y, 0, W, () => tint)
     const doneCount = v.hidden.filter(a => a.state === 'done').length
-    g.text(2, y, fit(`+${plural(v.hidden.length, 'more agent')} · ${doneCount} done`, W - 4), pack(hex(scheme().dim)), pack(tint))
+    g.text(2, y, fit(`+${plural(v.hidden.length, 'more agent')} · ${doneCount} done`, W - 4), pack(dimOn(tint, hex(scheme().dim))), pack(tint))
   }
   return { cells: g.encode(), rows }
 }

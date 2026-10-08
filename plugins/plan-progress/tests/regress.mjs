@@ -642,6 +642,72 @@ const C = {
       return [`repaint ${!!fresh}, accent ${backs.includes(0xe75a50)}, track ${track.toString(16)}, done green ${done}`, !!fresh && backs.includes(0xe75a50) && lum(track) < LUM_MID && done]
     })
   },
+  async omarchy_text_reads_on_every_theme() {
+    // the theme's colours stay as given (the pill is the accent, the track sits on the background), and every text
+    // cell picks a colour that reads at AA (4.5:1) as the engine paints it: a dark and a yellow theme, and a light one
+    const themes = {
+      tokyo: 'accent = "#7aa2f7"\nbackground = "#1a1b26"\nforeground = "#a9b1d6"\nmode = "dark"\n',
+      latte: 'accent = "#1e66f5"\nbackground = "#eff1f5"\nforeground = "#4c4f69"\nmode = "light"\n',
+      gruvbox: 'accent = "#d79921"\nbackground = "#282828"\nforeground = "#ebdbb2"\nmode = "dark"\n',
+    }
+    const q = c => c.map(v => Math.round(v / 17) * 17)
+    const parts = c => [(c >> 16) & 255, (c >> 8) & 255, c & 255]
+    const out = []
+    let ok = true
+    for (const [name, toml] of Object.entries(themes)) {
+      await withMachine({ MAC: false, OMARCHY: toml }, async () => {
+        const F = await boot(file)
+        await create(F)
+        for (const [id, title] of [['g1', 'Run the tests'], ['g2', 'Ask first'], ['g3', 'Break'], ['g4', 'Old one'], ['g5', 'Old two'], ['g6', 'Old three'], ['g7', 'Last one']]) await F.spawn(id, title)
+        await F.step('g1', 'high')
+        await F.agentTool('g1', 'Bash')
+        await F.hold('g2')
+        await F.turnComplete('g3', 'error')
+        for (const id of ['g4', 'g5', 'g6', 'g7']) await F.turnComplete(id)
+        await F.terminal(120)
+        F.tick(1000)
+        await F.everyTick()
+        const nodes = await F.terminal(120)
+        let min = Infinity
+        let hasAccent = false
+        const accent = parseInt(/accent = "#(\w+)"/.exec(toml)[1], 16)
+        for (const key of ['strips-t', 'track-t']) {
+          const r = nodes.find(n => n.type === 'Raster' && n.props.key === key)
+          const w = new Uint32Array(Uint8Array.from(Buffer.from(r?.props.cells ?? '', 'base64')).buffer)
+          if (w.length === 0) min = 0
+          for (let i = 0; i < w.length; i += 3) {
+            if (w[i + 2] === accent) hasAccent = true
+            const ch = String.fromCodePoint(w[i])
+            if (ch === ' ' || ch === '●' || ch === '│' || (w[i] >= 0x2800 && w[i] <= 0x28ff) || w[i + 1] & 0x01000000) continue
+            min = Math.min(min, contrast(q(parts(w[i + 1])), q(parts(w[i + 2]))))
+          }
+        }
+        out.push(`${name} ${min.toFixed(2)}${hasAccent ? '' : ' (no accent)'}`)
+        if (!(min >= 4.5 && hasAccent)) ok = false
+      })
+    }
+    return [`worst text: ${out.join(', ')}`, ok]
+  },
+  async standard_theme_keeps_its_text_colors(E) {
+    // without Omarchy nothing changes: white on the violet pill, the dark scheme's tool word and dim text on strips
+    return withMachine({ MAC: false }, async () => {
+      await create(E)
+      await E.spawn('g1', 'Run the tests')
+      await E.agentTool('g1', 'Bash')
+      const nodes = await E.terminal(120)
+      const fgs = key => {
+        const r = nodes.find(n => n.type === 'Raster' && n.props.key === key)
+        const w = new Uint32Array(Uint8Array.from(Buffer.from(r.props.cells, 'base64')).buffer)
+        const set = new Set()
+        for (let i = 0; i < w.length; i += 3) if (String.fromCodePoint(w[i]).trim() && !(w[i] >= 0x2800 && w[i] <= 0x28ff)) set.add(w[i + 1])
+        return set
+      }
+      const track = fgs('track-t')
+      const strips = fgs('strips-t')
+      const ok = track.has(0xffffff) && strips.has(0x9c85d8) && strips.has(0xa7a5ae)
+      return [`pill white ${track.has(0xffffff)}, tool word #9C85D8 ${strips.has(0x9c85d8)}, time #A7A5AE ${strips.has(0xa7a5ae)}`, ok]
+    })
+  },
   async without_omarchy_the_bar_stays_violet(E) {
     // no colors.toml: the default violet stays and the file is looked for once only
     return withMachine({ MAC: false }, async () => {
