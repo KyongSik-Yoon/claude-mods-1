@@ -862,6 +862,44 @@ const C = {
     }
     return [`kept while its agent runs ${whileRunning}, gone after ${!E.bar('t')}`, whileRunning && !E.bar('t')]
   },
+  async agents_bar_leaves_after_its_agents_finish(E) {
+    // the mod's own Agents bar finishes when its last agent does, and leaves 30 s later like any finished bar
+    const ticks = async n => {
+      for (let i = 0; i < n; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+    }
+    await E.spawn('ag1', 'Scan tests')
+    await ticks(5)
+    await E.turnComplete('ag1')
+    await ticks(29)
+    const at29 = E.bar('agents:auto')?.state
+    await ticks(2)
+    const at31 = !!E.bar('agents:auto')
+    return [`at 29 s ${at29}, shown at 31 s ${at31}`, at29 === 'done' && !at31]
+  },
+  async agents_bar_stays_while_a_new_batch_runs(E) {
+    // a batch started after the last one finished makes the bar run again, so it does not leave under it
+    const ticks = async n => {
+      for (let i = 0; i < n; i++) {
+        E.tick(1000)
+        await E.everyTick()
+      }
+    }
+    await E.spawn('ag1', 'Scan tests')
+    await E.turnComplete('ag1')
+    await ticks(20)
+    await E.spawn('ag2', 'Scan docs')
+    await ticks(40)
+    const whileRunning = E.bar('agents:auto')?.state
+    await E.turnComplete('ag2')
+    await ticks(29)
+    const at29 = !!E.bar('agents:auto')
+    await ticks(2)
+    const at31 = !!E.bar('agents:auto')
+    return [`after 40 s of the second batch ${whileRunning}, shown 29 s after it ${at29}, 31 s after ${at31}`, whileRunning === 'running' && at29 && !at31]
+  },
   async desktop_never_reads_the_appearance(E) {
     return withMachine({ TERM_PROGRAM: 'Apple_Terminal' }, async () => {
       await create(E)

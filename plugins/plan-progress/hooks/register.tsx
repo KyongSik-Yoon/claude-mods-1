@@ -1298,7 +1298,8 @@ function syncAuto(p: Plan, now: number): Plan {
     : agents.some(a => a.state === 'waiting') ? 'needs_input' : 'running'
   // the pill says how many are still at work; the bar's title already says "Agents"
   const running = agents.filter(a => a.state === 'running' || a.state === 'waiting').length
-  return { ...p, agentsDoneAt, stages: [{ name: isOver ? 'Agents' : `${running} running`, steps }], state }
+  // it ended when its last agent did, so auto-close times it like any finished bar
+  return { ...p, agentsDoneAt, endedAt: agentsDoneAt, stages: [{ name: isOver ? 'Agents' : `${running} running`, steps }], state }
 }
 
 function addRun(p: Plan, run: AgentRun, parentId: string | undefined, now: number): Plan {
@@ -2039,7 +2040,7 @@ export const register: Register = (on, options) => {
       const top = { ...run, depth: 0 }
       if (list.some(p => p.id === AGENTS)) return list.map(p => (p.id === AGENTS ? addRun(p, top, undefined, now) : p))
       isNew = true
-      const auto: Plan = { id: AGENTS, title: 'Agents', kind: 'todo', stages: [], state: 'running', note: null, startedAt: now }
+      const auto: Plan = { id: AGENTS, title: 'Agents', kind: 'todo', stages: [], state: 'running', note: null, startedAt: now, endedAt: null }
       return placeBar(list, addRun(auto, top, undefined, now))
     })
     // known only once its strip is stored, so the cleanup in the clock never sees a home without the agent
